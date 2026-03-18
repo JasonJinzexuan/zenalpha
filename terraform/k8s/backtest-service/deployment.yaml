@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backtest-service
+  namespace: zenalpha
+  labels:
+    app: backtest-service
+    version: v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backtest-service
+  template:
+    metadata:
+      labels:
+        app: backtest-service
+        version: v2
+    spec:
+      containers:
+        - name: backtest-service
+          image: ${ECR_REGISTRY}/zenalpha/backtest-service:latest
+          ports:
+            - containerPort: 8082
+              name: http
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: k8s
+            - name: EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE
+              value: http://eureka-server.zenalpha.svc.cluster.local:8761/eureka/
+            - name: APOLLO_META
+              value: http://apollo-configservice.zenalpha.svc.cluster.local:8080
+            - name: SPRING_DATASOURCE_URL
+              value: jdbc:mysql://$(DB_HOST):3306/zenalpha?useSSL=false&characterEncoding=utf8
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: zenalpha-db-secret
+                  key: username
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: zenalpha-db-secret
+                  key: password
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: zenalpha-db-secret
+                  key: host
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8082
+            initialDelaySeconds: 90
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8082
+            initialDelaySeconds: 45
+            periodSeconds: 10
+            failureThreshold: 3

@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: apollo-configservice
+  namespace: zenalpha
+  labels:
+    app: apollo-configservice
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  selector:
+    app: apollo-configservice
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: apollo-adminservice
+  namespace: zenalpha
+  labels:
+    app: apollo-adminservice
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8090
+      targetPort: 8090
+      protocol: TCP
+      name: http
+  selector:
+    app: apollo-adminservice

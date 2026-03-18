@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: eureka-config
+  namespace: zenalpha
+  labels:
+    app: eureka-server
+data:
+  application.yml: |
+    server:
+      port: 8761
+    eureka:
+      instance:
+        hostname: eureka-server-0.eureka-server.zenalpha.svc.cluster.local
+      client:
+        registerWithEureka: false
+        fetchRegistry: false
+        serviceUrl:
+          defaultZone: http://eureka-server-0.eureka-server.zenalpha.svc.cluster.local:8761/eureka/
+      server:
+        enableSelfPreservation: true
+        renewalPercentThreshold: 0.85
+    management:
+      endpoints:
+        web:
+          exposure:
+            include: health,info,prometheus

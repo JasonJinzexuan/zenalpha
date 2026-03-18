@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: signal-service
+  namespace: zenalpha
+  labels:
+    app: signal-service
+    version: v2
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: signal-service
+  template:
+    metadata:
+      labels:
+        app: signal-service
+        version: v2
+    spec:
+      containers:
+        - name: signal-service
+          image: ${ECR_REGISTRY}/zenalpha/signal-service:latest
+          ports:
+            - containerPort: 8081
+              name: http
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: k8s
+            - name: EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE
+              value: http://eureka-server.zenalpha.svc.cluster.local:8761/eureka/
+            - name: APOLLO_META
+              value: http://apollo-configservice.zenalpha.svc.cluster.local:8080
+            - name: SPRING_DATASOURCE_URL
+              value: jdbc:mysql://$(DB_HOST):3306/zenalpha?useSSL=false&characterEncoding=utf8
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: zenalpha-db-secret
+                  key: username
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: zenalpha-db-secret
+                  key: password
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: zenalpha-db-secret
+                  key: host
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8081
+            initialDelaySeconds: 90
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8081
+            initialDelaySeconds: 45
+            periodSeconds: 10
+            failureThreshold: 3

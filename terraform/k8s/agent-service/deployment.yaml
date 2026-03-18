@@ -48,9 +48,8 @@ spec:
             - name: POLYGON_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: agent-secrets
-                  key: polygon-api-key
-                  optional: true
+                  name: polygon-secret
+                  key: api-key
           resources:
             requests:
               cpu: 250m

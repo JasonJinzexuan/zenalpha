@@ -5,18 +5,23 @@ region       = "us-west-2"
 
 # EKS
 eks_node_instance_type = "t3.medium"
-eks_node_count         = 3
+eks_node_count         = 2
 eks_node_min           = 2
-eks_node_max           = 5
+eks_node_max           = 3
 
 # RDS
-db_instance_class = "db.t3.medium"
+db_instance_class = "db.t3.micro"
 db_name           = "zenalpha"
 db_username       = "zenalpha_admin"
-db_password       = "CHANGE_ME_USE_SECRETS_MANAGER"
 db_multi_az       = false
 db_storage_gb     = 20
 
 # Domain (optional)
 domain_name         = ""
 acm_certificate_arn = ""
+api_gateway_domain  = ""
+
+# ---- Secrets (put in secrets.auto.tfvars, which is gitignored) ----
+# db_password       = "..."
+# influxdb_password = "..."
+# polygon_api_key   = "..."

@@ -31,3 +31,20 @@ spec:
       name: http
   selector:
     app: apollo-adminservice
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: apollo-portal
+  namespace: zenalpha
+  labels:
+    app: apollo-portal
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8070
+      targetPort: 8070
+      protocol: TCP
+      name: http
+  selector:
+    app: apollo-portal

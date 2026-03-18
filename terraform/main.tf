@@ -66,11 +66,17 @@ module "timestream" {
   oidc_provider_url          = replace(module.eks.oidc_provider_url, "https://", "")
 }
 
-# Frontend (S3 + CloudFront)
+# Frontend (S3 + CloudFront + WAF)
 module "frontend" {
   source = "./modules/frontend"
+
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
 
   project_name        = var.project_name
   environment         = var.environment
   acm_certificate_arn = var.acm_certificate_arn
+  api_gateway_domain  = var.api_gateway_domain
 }

@@ -85,6 +85,12 @@ variable "influxdb_password" {
   sensitive   = true
 }
 
+variable "influxdb_api_token" {
+  description = "InfluxDB v2 API token (created via InfluxDB UI/API, NOT the admin password)"
+  type        = string
+  sensitive   = true
+}
+
 # Domain
 variable "domain_name" {
   description = "Domain name for the application (optional)"
@@ -95,5 +101,17 @@ variable "domain_name" {
 variable "acm_certificate_arn" {
   description = "ACM certificate ARN for HTTPS (optional)"
   type        = string
+  default     = ""
+}
+
+variable "api_gateway_domain" {
+  description = "K8s gateway LoadBalancer domain (from kubectl get svc)"
+  type        = string
+}
+
+variable "polygon_api_key" {
+  description = "Polygon.io API key for market data"
+  type        = string
+  sensitive   = true
   default     = ""
 }

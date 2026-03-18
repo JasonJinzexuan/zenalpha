@@ -39,15 +39,19 @@ class TimestreamClient:
         limit: int = 500,
     ) -> Sequence[RawKLine]:
         """Query OHLCV data from InfluxDB."""
+        # Sanitize inputs to prevent Flux injection
+        safe_instrument = instrument.replace('"', '').replace('\\', '')[:20]
+        safe_tf = timeframe.value.replace('"', '')[:10]
+        safe_limit = max(1, min(int(limit), 10000))
         flux = (
             f'from(bucket: "{self._bucket}")'
             f' |> range(start: -3650d)'
             f' |> filter(fn: (r) => r._measurement == "kline")'
-            f' |> filter(fn: (r) => r.instrument == "{instrument}")'
-            f' |> filter(fn: (r) => r.timeframe == "{timeframe.value}")'
+            f' |> filter(fn: (r) => r.instrument == "{safe_instrument}")'
+            f' |> filter(fn: (r) => r.timeframe == "{safe_tf}")'
             f' |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")'
             f' |> sort(columns: ["_time"], desc: true)'
-            f' |> limit(n: {limit})'
+            f' |> limit(n: {safe_limit})'
         )
         tables = await asyncio.to_thread(
             self._client.query_api().query, flux, org=self._org

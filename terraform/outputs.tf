@@ -67,3 +67,14 @@ output "ecr_repository_urls" {
   description = "ECR repository URLs"
   value       = module.ecr.repository_urls
 }
+
+output "ecr_registry" {
+  description = "ECR registry base URL (account.dkr.ecr.region.amazonaws.com)"
+  value       = split("/", module.ecr.repository_urls["gateway"])[0]
+}
+
+# Timestream
+output "influxdb_endpoint" {
+  description = "InfluxDB endpoint"
+  value       = module.timestream.endpoint
+}

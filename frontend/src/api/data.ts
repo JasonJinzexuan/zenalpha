@@ -1,22 +1,28 @@
-import { request } from './request'
-import type { RawKLine, Instrument, TimeFrame } from '@/types'
+import http from './http'
+import type { KLineData } from '@/types/chan'
 
-export function getKLines(
+const AGENT_BASE = '/agents'
+
+export async function getKLines(
   instrument: string,
-  timeframe: TimeFrame = '1d',
-  limit: number = 500
-): Promise<RawKLine[]> {
-  return request<RawKLine[]>({
-    method: 'GET',
-    url: `/data/klines/${instrument}`,
-    params: { timeframe, limit },
-  })
+  timeframe: string = '1d',
+  limit: number = 500,
+): Promise<KLineData[]> {
+  const { data } = await http.get<{ instrument: string; level: string; klines: KLineData[] }>(
+    `${AGENT_BASE}/klines/${instrument}`,
+    { params: { level: timeframe, limit } },
+  )
+  return data.klines
 }
 
-export function syncKLines(instrument: string, timeframe: TimeFrame = '1d'): Promise<void> {
-  return request<void>({ method: 'POST', url: '/data/klines/sync', data: { instrument, timeframe } })
-}
-
-export function getInstruments(): Promise<Instrument[]> {
-  return request<Instrument[]>({ method: 'GET', url: '/data/instruments' })
+export async function ingestKLines(
+  instrument: string,
+  level: string = '1d',
+  limit: number = 500,
+): Promise<{ instrument: string; records_written: number }> {
+  const { data } = await http.post<{ instrument: string; level: string; records_written: number; source: string }>(
+    `${AGENT_BASE}/ingest`,
+    { instrument, level, limit },
+  )
+  return data
 }

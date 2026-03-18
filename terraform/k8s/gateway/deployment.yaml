@@ -32,6 +32,16 @@ spec:
               value: http://eureka-server.zenalpha.svc.cluster.local:8761/eureka/
             - name: APOLLO_META
               value: http://apollo-configservice.zenalpha.svc.cluster.local:8080
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: zenalpha-secrets
+                  key: jwt-secret
+            - name: CORS_ALLOWED_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: gateway-config
+                  key: cors-allowed-origins
           volumeMounts:
             - name: config
               mountPath: /config

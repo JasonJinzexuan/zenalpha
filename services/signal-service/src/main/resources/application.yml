@@ -5,7 +5,7 @@ spring:
   application:
     name: signal-service
   datasource:
-    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DB:zenalpha}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DB:zenalpha}?useSSL=true&requireSSL=true&allowPublicKeyRetrieval=true&serverTimezone=UTC
     username: ${MYSQL_USER:zenalpha}
     password: ${MYSQL_PASSWORD:zenalpha}
     driver-class-name: com.mysql.cj.jdbc.Driver

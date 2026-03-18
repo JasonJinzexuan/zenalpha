@@ -24,8 +24,17 @@ terraform/.terraform/
 terraform/.terraform.lock.hcl
 terraform/terraform.tfstate
 terraform/terraform.tfstate.backup
-terraform/terraform.tfvars
+terraform/secrets.auto.tfvars
 terraform/tfplan
+
+# Old/deprecated directories
+frontend-vue-old/
+
+# Security audit (may reference secrets for context)
+SECURITY_AUDIT_REPORT.md
+
+# Node modules (catch-all)
+node_modules/
 
 # macOS resource forks
 ._*

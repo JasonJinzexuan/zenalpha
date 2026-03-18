@@ -24,6 +24,11 @@ spec:
             - containerPort: 8080
               name: http
           env:
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: zenalpha-db-secret
+                  key: host
             - name: SPRING_DATASOURCE_URL
               value: jdbc:mysql://$(DB_HOST):3306/ApolloConfigDB?useSSL=false&characterEncoding=utf8
             - name: SPRING_DATASOURCE_USERNAME
@@ -36,11 +41,6 @@ spec:
                 secretKeyRef:
                   name: zenalpha-db-secret
                   key: password
-            - name: DB_HOST
-              valueFrom:
-                secretKeyRef:
-                  name: zenalpha-db-secret
-                  key: host
             - name: EUREKA_INSTANCE_HOME_PAGE_URL
               value: http://apollo-configservice.zenalpha.svc.cluster.local:8080
           resources:
@@ -54,13 +54,13 @@ spec:
             httpGet:
               path: /health
               port: 8080
-            initialDelaySeconds: 60
+            initialDelaySeconds: 120
             periodSeconds: 15
           readinessProbe:
             httpGet:
               path: /health
               port: 8080
-            initialDelaySeconds: 30
+            initialDelaySeconds: 60
             periodSeconds: 10
 ---
 apiVersion: apps/v1
@@ -89,6 +89,11 @@ spec:
             - containerPort: 8090
               name: http
           env:
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: zenalpha-db-secret
+                  key: host
             - name: SPRING_DATASOURCE_URL
               value: jdbc:mysql://$(DB_HOST):3306/ApolloConfigDB?useSSL=false&characterEncoding=utf8
             - name: SPRING_DATASOURCE_USERNAME
@@ -101,11 +106,6 @@ spec:
                 secretKeyRef:
                   name: zenalpha-db-secret
                   key: password
-            - name: DB_HOST
-              valueFrom:
-                secretKeyRef:
-                  name: zenalpha-db-secret
-                  key: host
           resources:
             requests:
               cpu: 200m
@@ -117,11 +117,76 @@ spec:
             httpGet:
               path: /health
               port: 8090
-            initialDelaySeconds: 60
+            initialDelaySeconds: 120
             periodSeconds: 15
           readinessProbe:
             httpGet:
               path: /health
               port: 8090
-            initialDelaySeconds: 30
+            initialDelaySeconds: 60
+            periodSeconds: 10
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apollo-portal
+  namespace: zenalpha
+  labels:
+    app: apollo-portal
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: apollo-portal
+  template:
+    metadata:
+      labels:
+        app: apollo-portal
+    spec:
+      containers:
+        - name: apollo-portal
+          image: apolloconfig/apollo-portal:2.1.0
+          ports:
+            - containerPort: 8070
+              name: http
+          env:
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: zenalpha-db-secret
+                  key: host
+            - name: SPRING_DATASOURCE_URL
+              value: jdbc:mysql://$(DB_HOST):3306/ApolloPortalDB?useSSL=false&characterEncoding=utf8
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: zenalpha-db-secret
+                  key: username
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: zenalpha-db-secret
+                  key: password
+            - name: APOLLO_PORTAL_ENVS
+              value: pro
+            - name: PRO_META
+              value: http://apollo-configservice.zenalpha.svc.cluster.local:8080
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 768Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8070
+            initialDelaySeconds: 120
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8070
+            initialDelaySeconds: 60
             periodSeconds: 10

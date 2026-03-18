@@ -1,0 +1,47 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: daily-ingest
+  namespace: zenalpha
+spec:
+  # Run at 01:00 UTC daily (market close + buffer for US stocks)
+  schedule: "0 1 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: ingest
+              image: curlimages/curl:8.5.0
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  AGENT=http://agent-service.zenalpha.svc.cluster.local:8090
+                  INSTRUMENTS="AAPL MSFT GOOGL AMZN NVDA META UNH TSLA JPM V"
+
+                  echo "=== Daily Ingest $(date -u) ==="
+                  for sym in $INSTRUMENTS; do
+                    echo "Ingesting $sym..."
+                    curl -sf -X POST "$AGENT/ingest" \
+                      -H 'Content-Type: application/json' \
+                      -d "{\"instrument\":\"$sym\",\"level\":\"1d\",\"limit\":10}" \
+                      --max-time 30 || echo "WARN: $sym ingest failed"
+                    # Polygon free tier: 5 req/min
+                    sleep 13
+                  done
+
+                  echo "=== Signal Scan ==="
+                  curl -sf -X POST "$AGENT/scan" \
+                    -H 'Content-Type: application/json' \
+                    -d "{\"instruments\":[\"AAPL\",\"MSFT\",\"GOOGL\",\"AMZN\",\"NVDA\",\"META\",\"UNH\",\"TSLA\",\"JPM\",\"V\"],\"level\":\"1d\",\"limit\":500}" \
+                    --max-time 60 | head -c 500 || echo "WARN: scan failed"
+
+                  echo ""
+                  echo "=== Done ==="

@@ -1,13 +1,17 @@
-# Build stage
+# Build stage - use full source copy to resolve parent pom modules
 FROM maven:3.9-eclipse-temurin-17 AS build
 WORKDIR /app
 COPY pom.xml .
-COPY common/pom.xml common/
-COPY user-service/pom.xml user-service/
-RUN mvn dependency:go-offline -pl user-service -am
-COPY common/src common/src
-COPY user-service/src user-service/src
-RUN mvn package -pl user-service -am -DskipTests
+COPY common/ common/
+COPY user-service/ user-service/
+COPY eureka-server/pom.xml eureka-server/pom.xml
+COPY gateway/pom.xml gateway/pom.xml
+COPY signal-service/pom.xml signal-service/pom.xml
+COPY backtest-service/pom.xml backtest-service/pom.xml
+COPY data-service/pom.xml data-service/pom.xml
+COPY notification-service/pom.xml notification-service/pom.xml
+RUN mkdir -p eureka-server/src gateway/src signal-service/src backtest-service/src data-service/src notification-service/src
+RUN mvn package -pl user-service -am -DskipTests -B -q
 
 # Runtime stage
 FROM eclipse-temurin:17-jre-alpine

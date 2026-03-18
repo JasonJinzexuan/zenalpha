@@ -33,7 +33,10 @@ _MAX_POSITIONS = 10
 _MAX_SINGLE_POSITION_PCT = Decimal("0.15")
 _DRAWDOWN_HALF = Decimal("0.10")
 _DRAWDOWN_CLEAR = Decimal("0.15")
+_DRAWDOWN_SUSPEND = Decimal("0.20")  # v2.2: 20% → full clear + suspend
 _TRAILING_ATR_MULT = Decimal("1.5")
+_MAX_SECTOR_EXPOSURE = Decimal("0.30")
+_CORRELATION_THRESHOLD = Decimal("0.8")
 
 
 def atr(klines: Sequence[RawKLine], period: int = _ATR_PERIOD) -> Decimal:
@@ -97,12 +100,25 @@ class PositionSizer:
         equity: Decimal,
         position_value: Decimal,
         current_position_count: int,
+        sector: str = "",
+        positions: Sequence[Position] | None = None,
     ) -> str | None:
+        """Check all portfolio-level hard constraints (v2.2).
+
+        Returns a rejection reason string, or None if the position is allowed.
+        """
         if current_position_count >= _MAX_POSITIONS:
             return "max_positions_reached"
         if equity > Decimal("0"):
             if position_value / equity > _MAX_SINGLE_POSITION_PCT:
                 return "single_position_limit_exceeded"
+        # Industry exposure constraint (GICS sector)
+        if sector and positions and equity > Decimal("0"):
+            sector_check = check_sector_exposure(
+                positions, sector, position_value, equity
+            )
+            if sector_check is not None:
+                return sector_check
         return None
 
 
@@ -208,12 +224,88 @@ class StopLossManager:
 def check_portfolio_drawdown(
     drawdown: Decimal,
 ) -> str | None:
-    """Check portfolio-level drawdown thresholds.
+    """Check portfolio-level drawdown thresholds (v2.2 three tiers).
 
-    Returns action to take: 'half_all', 'clear_all', or None.
+    Returns action to take: 'half_all', 'clear_all', 'suspend', or None.
     """
+    if drawdown >= _DRAWDOWN_SUSPEND:
+        return "suspend"  # full clear + suspend trading until month-end
     if drawdown >= _DRAWDOWN_CLEAR:
         return "clear_all"
     if drawdown >= _DRAWDOWN_HALF:
         return "half_all"
     return None
+
+
+def check_sector_exposure(
+    positions: Sequence[Position],
+    new_sector: str,
+    new_position_value: Decimal,
+    equity: Decimal,
+) -> str | None:
+    """Reject if adding this position would breach sector exposure limit (30%)."""
+    if equity <= Decimal("0"):
+        return None
+    sector_value = new_position_value
+    for pos in positions:
+        if pos.sector == new_sector:
+            sector_value += pos.entry_price * pos.quantity
+    if sector_value / equity > _MAX_SECTOR_EXPOSURE:
+        return "sector_exposure_exceeded"
+    return None
+
+
+def check_correlation(
+    daily_returns_new: Sequence[Decimal],
+    daily_returns_existing: Sequence[Decimal],
+) -> Decimal:
+    """Compute Pearson correlation between two return series.
+
+    Returns correlation coefficient in [-1, 1]. Uses Decimal arithmetic.
+    Returns 0 if series are too short (<10 data points).
+    """
+    n = min(len(daily_returns_new), len(daily_returns_existing))
+    if n < 10:
+        return Decimal("0")
+
+    xs = daily_returns_new[-n:]
+    ys = daily_returns_existing[-n:]
+    n_dec = Decimal(str(n))
+
+    sum_x = sum(xs, Decimal("0"))
+    sum_y = sum(ys, Decimal("0"))
+    sum_xy = sum(x * y for x, y in zip(xs, ys))
+    sum_x2 = sum(x * x for x in xs)
+    sum_y2 = sum(y * y for y in ys)
+
+    numerator = n_dec * sum_xy - sum_x * sum_y
+    denom_x = n_dec * sum_x2 - sum_x * sum_x
+    denom_y = n_dec * sum_y2 - sum_y * sum_y
+
+    if denom_x <= Decimal("0") or denom_y <= Decimal("0"):
+        return Decimal("0")
+
+    # Approximate sqrt using Newton's method
+    def _sqrt(val: Decimal) -> Decimal:
+        if val <= Decimal("0"):
+            return Decimal("0")
+        x = val
+        for _ in range(50):
+            x = (x + val / x) / Decimal("2")
+        return x
+
+    denominator = _sqrt(denom_x) * _sqrt(denom_y)
+    if denominator <= Decimal("0"):
+        return Decimal("0")
+
+    return numerator / denominator
+
+
+def is_highly_correlated(
+    daily_returns_new: Sequence[Decimal],
+    daily_returns_existing: Sequence[Decimal],
+    threshold: Decimal = _CORRELATION_THRESHOLD,
+) -> bool:
+    """Check if two instruments are highly correlated (Pearson > 0.8)."""
+    corr = check_correlation(daily_returns_new, daily_returns_existing)
+    return corr > threshold

@@ -1,11 +1,18 @@
-"""Signal filter for the L9 scoring pipeline."""
+"""Signal filter for the L9 scoring pipeline.
+
+Integrates market regime detection and event calendar filtering.
+"""
 
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import datetime
 from decimal import Decimal
 from typing import Sequence
 
-from chanquant.core.objects import ScanResult, SignalType
+from chanquant.core.objects import MarketRegime, ScanResult, SignalType
+from chanquant.scoring.event_calendar import EventCalendar
+from chanquant.scoring.regime import RegimeDetector, RegimeInputs
 
 _SIGNAL_PRIORITY: dict[SignalType, int] = {
     SignalType.B1: 0,
@@ -23,7 +30,10 @@ _MIN_NESTING_DEPTH = 2
 
 
 class SignalFilter:
-    """Filter and rank scan results based on quality thresholds."""
+    """Filter and rank scan results based on quality thresholds.
+
+    Optionally applies market regime adjustments and event calendar filtering.
+    """
 
     def __init__(
         self,
@@ -31,27 +41,34 @@ class SignalFilter:
         min_divergence_strength: Decimal = _MIN_DIVERGENCE_STRENGTH,
         max_signal_freshness: int = _MAX_SIGNAL_FRESHNESS,
         min_nesting_depth: int = _MIN_NESTING_DEPTH,
+        event_calendar: EventCalendar | None = None,
+        regime: MarketRegime | None = None,
     ) -> None:
         self._min_trend_alignment = min_trend_alignment
         self._min_divergence_strength = min_divergence_strength
         self._max_signal_freshness = max_signal_freshness
         self._min_nesting_depth = min_nesting_depth
+        self._event_calendar = event_calendar
+        self._regime = regime
 
     def filter(
         self,
         results: Sequence[ScanResult],
+        current_time: datetime | None = None,
     ) -> Sequence[ScanResult]:
-        passed = [r for r in results if self._passes(r)]
+        passed: list[ScanResult] = []
+        for r in results:
+            if not self._passes(r):
+                continue
+            # Apply event calendar score adjustment
+            adjusted = self._apply_event_adjustment(r, current_time)
+            if adjusted is None:
+                continue
+            passed.append(adjusted)
+
         sorted_results = sorted(passed, key=_sort_key)
         return tuple(
-            ScanResult(
-                instrument=r.instrument,
-                signal=r.signal,
-                nesting=r.nesting,
-                score=r.score,
-                rank=idx + 1,
-                scan_time=r.scan_time,
-            )
+            replace(r, rank=idx + 1)
             for idx, r in enumerate(sorted_results)
         )
 
@@ -65,6 +82,24 @@ class SignalFilter:
         if not _check_nesting_depth(result, self._min_nesting_depth):
             return False
         return True
+
+    def _apply_event_adjustment(
+        self,
+        result: ScanResult,
+        current_time: datetime | None,
+    ) -> ScanResult | None:
+        """Apply event calendar multiplier; returns None if signal blocked."""
+        if self._event_calendar is None or current_time is None:
+            return result
+        multiplier = self._event_calendar.score_multiplier(
+            result.signal, current_time
+        )
+        if multiplier <= Decimal("0"):
+            return None
+        if multiplier < Decimal("1"):
+            adjusted_score = result.score * multiplier
+            return replace(result, score=adjusted_score)
+        return result
 
 
 def _check_divergence_strength(

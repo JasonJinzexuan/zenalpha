@@ -10,6 +10,17 @@ dependencies = [
     "rich>=13.9",
 ]
 
+[project.optional-dependencies]
+api = [
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+]
+agents = [
+    "langgraph>=0.2",
+    "langchain-aws>=0.2",
+    "langchain-core>=0.3",
+]
+
 [project.scripts]
 zenalpha = "chanquant.cli.main:app"
 

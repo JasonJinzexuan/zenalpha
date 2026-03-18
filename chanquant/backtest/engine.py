@@ -31,19 +31,25 @@ _MAX_POSITION_PCT = Decimal("0.1")  # 10% of equity per position
 
 
 class BacktestEngine:
-    """Run an event-driven backtest over historical K-line data."""
+    """Run an event-driven backtest over historical K-line data.
+
+    Supports survivorship bias mitigation by accepting delisted instruments.
+    """
 
     def __init__(
         self,
         market_cap_tier: str = "mid_cap",
         stop_loss_pct: Decimal = _DEFAULT_STOP_LOSS_PCT,
         max_position_pct: Decimal = _MAX_POSITION_PCT,
+        delisted: dict[str, datetime] | None = None,
     ) -> None:
         self._portfolio = PortfolioManager()
         self._slippage = SlippageModel()
         self._market_cap_tier = market_cap_tier
         self._stop_loss_pct = stop_loss_pct
         self._max_position_pct = max_position_pct
+        # Map of instrument → delisting date for survivorship bias handling
+        self._delisted = delisted or {}
 
     def run(
         self,
@@ -73,13 +79,21 @@ class BacktestEngine:
             # 1. Run pipeline analysis & collect signals
             signals = self._analyse_bars(pipelines, bars)
 
-            # 2. Check stop losses
+            # 2. Force-close positions in delisted instruments
+            snapshot = self._check_delistings(snapshot, timestamp, bars)
+
+            # 3. Check stop losses
             snapshot = self._check_stops(snapshot, bars)
 
-            # 3. Process new signals
-            snapshot = self._process_signals(snapshot, signals, bars)
+            # 4. Process new signals (skip delisted instruments)
+            active_signals = [
+                s for s in signals
+                if s.instrument not in self._delisted
+                or timestamp < self._delisted[s.instrument]
+            ]
+            snapshot = self._process_signals(snapshot, active_signals, bars)
 
-            # 4. Update equity with current prices
+            # 5. Update equity with current prices
             prices = {inst: bar.close for inst, bar in bars.items()}
             snapshot = self._portfolio.update_equity(snapshot, prices)
 
@@ -90,6 +104,30 @@ class BacktestEngine:
         return metrics, tuple(snapshots)
 
     # ── Internal steps ───────────────────────────────────────────────────────
+
+    def _check_delistings(
+        self,
+        snapshot: PortfolioSnapshot,
+        timestamp: datetime,
+        bars: dict[str, RawKLine],
+    ) -> PortfolioSnapshot:
+        """Force-close positions in instruments that have been delisted.
+
+        Uses the last available price (survivorship bias mitigation).
+        """
+        for position in snapshot.positions:
+            delist_date = self._delisted.get(position.instrument)
+            if delist_date is None or timestamp < delist_date:
+                continue
+            bar = bars.get(position.instrument)
+            if bar is not None:
+                exit_price = bar.close
+            else:
+                exit_price = position.entry_price * Decimal("0.01")  # near-zero
+            snapshot = self._portfolio.close_position(
+                snapshot, position.instrument, exit_price, "delisted"
+            )
+        return snapshot
 
     def _analyse_bars(
         self,

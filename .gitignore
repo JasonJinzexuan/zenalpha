@@ -19,3 +19,6 @@ htmlcov/
 .ruff_cache/
 .uv/
 uv.lock
+# macOS resource forks
+._*
+.DS_Store

@@ -10,6 +10,7 @@ from typing import Sequence
 
 from chanquant.core.objects import (
     IntervalNesting,
+    MergedSignal,
     Signal,
     SignalType,
     TimeFrame,
@@ -150,3 +151,85 @@ class IntervalNester:
         precise: Signal | None,
     ) -> int:
         return sum(1 for s in (large, medium, precise) if s is not None)
+
+
+# ── Signal Merge / Dedup (rule 8.6) ──────────────────────────────────────────
+
+# Timeframe weights used for merged score calculation (same as L9).
+_TIMEFRAME_WEIGHTS: dict[TimeFrame, Decimal] = {
+    TimeFrame.MONTHLY: Decimal("8"),
+    TimeFrame.WEEKLY: Decimal("5"),
+    TimeFrame.DAILY: Decimal("3"),
+    TimeFrame.HOUR_1: Decimal("2"),
+    TimeFrame.MIN_30: Decimal("2"),
+    TimeFrame.MIN_5: Decimal("1"),
+    TimeFrame.MIN_1: Decimal("1"),
+}
+
+_DEDUP_BARS = 3  # suppress duplicate signals within 3 bars of same level
+
+
+def merge_signals(
+    signals: Sequence[Signal],
+    instrument: str,
+) -> MergedSignal | None:
+    """Merge multi-level signals for one instrument into a single MergedSignal.
+
+    - Primary signal = largest timeframe signal.
+    - Supporting signals = remaining smaller timeframe signals.
+    - merged_score = weighted sum of each signal's strength.
+    - Returns None if no signals for this instrument.
+    """
+    inst_signals = [s for s in signals if s.instrument == instrument]
+    if not inst_signals:
+        return None
+
+    # Dedup: within same level+direction, keep only most recent within 3-bar window
+    deduped = _dedup_signals(inst_signals)
+    if not deduped:
+        return None
+
+    # Sort by timeframe weight descending to find primary
+    deduped.sort(
+        key=lambda s: _TIMEFRAME_WEIGHTS.get(s.level, Decimal("1")),
+        reverse=True,
+    )
+
+    primary = deduped[0]
+    supporting = tuple(deduped[1:])
+
+    merged_score = sum(
+        s.strength * _TIMEFRAME_WEIGHTS.get(s.level, Decimal("1"))
+        for s in deduped
+    )
+
+    depth = len(deduped)
+    parts = [f"{primary.signal_type.value}@{primary.level.value}"]
+    for s in supporting:
+        parts.append(f"{s.signal_type.value}@{s.level.value}")
+    summary = f"{instrument}: {' + '.join(parts)}"
+
+    return MergedSignal(
+        instrument=instrument,
+        primary_signal=primary,
+        supporting_signals=supporting,
+        nesting_depth=depth,
+        merged_score=merged_score,
+        summary=summary,
+    )
+
+
+def _dedup_signals(signals: Sequence[Signal]) -> list[Signal]:
+    """Remove duplicate signals: same instrument + level + direction within 3 bars."""
+    seen: dict[tuple[TimeFrame, bool], Signal] = {}
+    for sig in signals:
+        is_buy = _is_buy_signal(sig)
+        key = (sig.level, is_buy)
+        existing = seen.get(key)
+        if existing is None:
+            seen[key] = sig
+        else:
+            # Keep the more recent one
+            if sig.timestamp > existing.timestamp:
+                seen[key] = sig
+    return list(seen.values())

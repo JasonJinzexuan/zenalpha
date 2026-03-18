@@ -6,7 +6,7 @@ All dataclasses are frozen (immutable). All financial values use Decimal.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import Enum, auto
 from typing import TYPE_CHECKING
@@ -68,6 +68,19 @@ class MarketRegime(Enum):
     NORMAL = auto()
     HIGH_VOL = auto()
     EXTREME = auto()
+
+
+class OutcomeType(Enum):
+    CORRECT = auto()
+    INCORRECT = auto()
+    PARTIAL = auto()
+    PENDING = auto()
+
+
+class EventImpact(Enum):
+    HIGH = auto()
+    MEDIUM = auto()
+    LOW = auto()
 
 
 # ── K-Line Structures ────────────────────────────────────────────────────────
@@ -299,6 +312,58 @@ class ScanResult:
     scan_time: datetime | None = None
 
 
+# ── L8: Merged Signal (信号去重合并, rule 8.6) ─────────────────────────────────
+
+
+@dataclass(frozen=True)
+class MergedSignal:
+    """Combined multi-level signal for one instrument (rule 8.6)."""
+
+    instrument: str
+    primary_signal: Signal
+    supporting_signals: tuple[Signal, ...] = ()
+    nesting_depth: int = 0
+    merged_score: Decimal = Decimal("0")
+    summary: str = ""
+
+
+# ── Signal Outcome (信号反馈追踪) ────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class SignalOutcome:
+    """Post-signal tracking result for feedback and calibration."""
+
+    signal_id: str
+    instrument: str
+    signal_type: SignalType
+    level: TimeFrame
+    signal_price: Decimal
+    signal_time: datetime
+    outcome: OutcomeType = OutcomeType.PENDING
+    max_favorable_excursion: Decimal = Decimal("0")
+    max_adverse_excursion: Decimal = Decimal("0")
+    pnl_at_close: Decimal = Decimal("0")
+    bars_to_target: int | None = None
+    vix_at_signal: Decimal | None = None
+    market_regime: MarketRegime = MarketRegime.NORMAL
+    tracking_window: int = 20
+    evaluated_at: datetime | None = None
+
+
+# ── Market Event (事件日历) ──────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class MarketEvent:
+    """Market or instrument-level event for signal filtering."""
+
+    event_type: str  # FOMC / CPI / PPI / OPEX / QUAD_WITCHING / EARNINGS
+    event_date: date
+    instrument: str | None = None  # None = market-wide event
+    impact: EventImpact = EventImpact.MEDIUM
+
+
 # ── MACD Helper ──────────────────────────────────────────────────────────────
 
 
@@ -345,6 +410,7 @@ class Position:
     stop_loss: Decimal | None = None
     trailing_stop: Decimal | None = None
     signal: Signal | None = None
+    sector: str = ""  # GICS sector for industry exposure constraint
 
 
 @dataclass(frozen=True)

@@ -9,11 +9,13 @@ from typing import Sequence
 from chanquant.core.objects import (
     DivergenceType,
     IntervalNesting,
+    MarketRegime,
     ScanResult,
     Signal,
     SignalType,
     TimeFrame,
 )
+from chanquant.scoring.regime import RegimeDetector
 
 _SIGNAL_TYPE_SCORES: dict[SignalType, Decimal] = {
     SignalType.B1: Decimal("5"),
@@ -36,7 +38,14 @@ _TIMEFRAME_WEIGHTS: dict[TimeFrame, Decimal] = {
 
 
 class SignalScorer:
-    """Score signals based on the L9 composite formula."""
+    """Score signals based on the L9 composite formula.
+
+    Optionally accepts a MarketRegime to dynamically adjust timeframe weights.
+    """
+
+    def __init__(self, regime: MarketRegime | None = None) -> None:
+        self._regime = regime
+        self._regime_detector = RegimeDetector() if regime is not None else None
 
     def score(
         self,
@@ -46,9 +55,16 @@ class SignalScorer:
         signal_score = _SIGNAL_TYPE_SCORES.get(
             signal.signal_type, Decimal("1")
         )
-        timeframe_weight = _TIMEFRAME_WEIGHTS.get(
+        base_tf_weight = _TIMEFRAME_WEIGHTS.get(
             signal.level, Decimal("1")
         )
+        # Apply regime adjustment to timeframe weight
+        if self._regime is not None and self._regime_detector is not None:
+            timeframe_weight = self._regime_detector.adjust_timeframe_weight(
+                self._regime, base_tf_weight, signal.level,
+            )
+        else:
+            timeframe_weight = base_tf_weight
         div_strength = _divergence_strength(signal)
         trend_align = _trend_alignment(signal, nesting)
         vol_factor = _volume_factor(signal)

@@ -322,14 +322,19 @@ zenalpha/
 | 资源 | 规格 |
 |------|------|
 | VPC | 3 AZ, 6 subnets (3 public + 3 private), 1 NAT GW |
-| EKS | Kubernetes 1.29, t3.medium × 3 node group |
-| RDS | MySQL 8.0, db.t3.medium, private subnet |
+| EKS | Kubernetes 1.29, 1x t3.medium (Karpenter) + Nx c7i.large (workloads) |
+| RDS | MySQL 8.0, db.t3.micro, private subnet, SSL enabled |
 | Timestream for InfluxDB | InfluxDB v2, bucket `marketdata`, org `zenalpha` |
-| CloudFront | S3 origin (OAC) + NLB origin, WAF 附加, SPA routing |
-| ECR | 容器镜像仓库 |
-| NLB | Gateway 入口 (Kubernetes LoadBalancer Service) |
+| CloudFront | S3 origin (OAC) + ALB origin (/api/*), WAF, SPA routing |
+| ECR | Container registries for all services |
+| Apollo | Config center (configservice + adminservice + portal) |
+| Karpenter | Auto-scales c7i.large worker nodes |
 
 Region: `us-west-2`
+
+> **📖 完整部署文档 / Full Deployment Guide: [docs/deployment-guide.md](docs/deployment-guide.md)**
+>
+> 包含 Terraform、Karpenter、K8s、InfluxDB、Apollo、前端的分步指南，中英双语。
 
 ---
 
@@ -341,10 +346,10 @@ Region: `us-west-2`
 git clone https://github.com/JasonJinzexuan/zenalpha.git
 cd zenalpha
 
-# 前端 — 需要 Node 20+
+# 前端 — 需要 Node 18+
 cd frontend
-npm install
-npm run dev         # http://localhost:3000
+npm ci
+npm run dev         # http://localhost:5173
 
 # Java 微服务 — 需要 JDK 17 + Maven 3.9+
 cd ../services
@@ -356,25 +361,25 @@ pip install -e ".[api]"
 uvicorn chanquant.api.gateway:app --port 8090
 ```
 
-### 环境变量
-
-| 变量 | 说明 | 示例 |
-|------|------|------|
-| `INFLUXDB_URL` | InfluxDB 地址 | `https://xxx.timestream-influxdb.us-west-2.on.aws:8086` |
-| `INFLUXDB_TOKEN` | InfluxDB 访问 Token | `xxx` |
-| `POLYGON_API_KEY` | Polygon.io API Key | `xxx` |
-| `MYSQL_PASSWORD` | RDS MySQL 密码 | `xxx` |
-
 ### 一键部署（AWS）
 
 ```bash
 cd terraform
-cp terraform.tfvars.example terraform.tfvars
-# 编辑 terraform.tfvars
+cp terraform.tfvars.example terraform.tfvars    # 编辑配置
+cat > secrets.auto.tfvars << 'EOF'              # 创建密钥文件（gitignored）
+db_password        = "<strong-password>"
+influxdb_password  = "<strong-password>"
+influxdb_api_token = "<created-after-influxdb-init>"
+polygon_api_key    = "<your-key>"
+EOF
 
-terraform init && terraform apply
-# K8s 部署清单在 terraform/k8s/
+terraform init && terraform apply               # ~20 min
+aws eks update-kubeconfig --name zenalpha-prod-eks --region us-west-2
+scripts/build-all.sh                            # 构建 + 推送镜像
+scripts/deploy-k8s.sh                           # 部署 K8s 工作负载
 ```
+
+> 详细步骤见 [docs/deployment-guide.md](docs/deployment-guide.md)
 
 ---
 

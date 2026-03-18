@@ -225,19 +225,38 @@ class SegmentBuilder:
         return self._try_terminate()
 
     def _try_terminate(self) -> Segment | None:
-        """Attempt to detect segment termination."""
+        """Attempt to detect segment termination.
+
+        Checks both the current direction and the opposite direction,
+        since the initial direction may not match the actual segment trend.
+        """
         if self._direction is None or len(self._strokes) < 3:
             return None
 
-        char_seq = _build_char_sequence(self._strokes, self._direction)
-        std_chars = _standardize_char_sequence(char_seq, self._direction)
+        # Check current direction first
+        result = self._check_direction(self._direction)
+        if result is not None:
+            return result
 
-        # Check first-kind termination
-        if _check_first_kind(std_chars, self._direction):
+        # Also check opposite direction
+        opposite = Direction.DOWN if self._direction == Direction.UP else Direction.UP
+        result = self._check_direction(opposite)
+        if result is not None:
+            return result
+
+        return None
+
+    def _check_direction(self, direction: Direction) -> Segment | None:
+        """Check for segment termination in the given direction."""
+        char_seq = _build_char_sequence(self._strokes, direction)
+        std_chars = _standardize_char_sequence(char_seq, direction)
+
+        if _check_first_kind(std_chars, direction):
+            self._direction = direction
             return self._finalize_segment(SegmentTermType.FIRST_KIND)
 
-        # Check second-kind termination
-        if _check_second_kind(std_chars, self._strokes, self._direction):
+        if _check_second_kind(std_chars, self._strokes, direction):
+            self._direction = direction
             return self._finalize_segment(SegmentTermType.SECOND_KIND)
 
         return None

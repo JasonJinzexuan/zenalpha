@@ -29,7 +29,7 @@ public class TrendClassifier {
 
         // Rule 5.1: Single center → consolidation
         if (centers.size() == 1) {
-            return classifyConsolidation(centers.getFirst(), segments, level);
+            return classifyConsolidation(centers.get(0), segments, level);
         }
 
         // Rule 5.2: Up trend — ≥2 centers, posterior ZD > anterior ZG (non-overlapping upward)
@@ -43,7 +43,7 @@ public class TrendClassifier {
         }
 
         // Default: consolidation with latest center
-        return classifyConsolidation(centers.getLast(), segments, level);
+        return classifyConsolidation(centers.get(centers.size() - 1), segments, level);
     }
 
     private static boolean isUpTrend(List<Center> centers) {
@@ -91,7 +91,7 @@ public class TrendClassifier {
             Direction direction) {
 
         Center centerA = centers.size() >= 2 ? centers.get(centers.size() - 2) : null;
-        Center centerB = centers.getLast();
+        Center centerB = centers.get(centers.size() - 1);
 
         Segment segA = centerA != null ? findEntrySegment(segments, centerA, direction) : null;
         Segment segB = centerA != null ? findSegmentBetween(segments, centerA, centerB) : null;

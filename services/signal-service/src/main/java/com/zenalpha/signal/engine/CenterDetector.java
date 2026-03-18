@@ -40,7 +40,7 @@ public class CenterDetector {
 
                 // Rule 4.4: Expansion — check if previous completed center overlaps [DD, GG]
                 if (!completed.isEmpty()) {
-                    Center expanded = expandCenters(completed.getLast(), toAdd);
+                    Center expanded = expandCenters(completed.get(completed.size() - 1), toAdd);
                     if (expanded != null) {
                         completed.set(completed.size() - 1, expanded);
                         toAdd = null;
@@ -160,8 +160,8 @@ public class CenterDetector {
                 gg,
                 dd,
                 List.copyOf(segments),
-                segments.getFirst().startTime(),
-                segments.getLast().endTime(),
+                segments.get(0).startTime(),
+                segments.get(segments.size() - 1).endTime(),
                 Math.max(0, segments.size() - 3)
         );
     }

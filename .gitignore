@@ -19,6 +19,14 @@ htmlcov/
 .ruff_cache/
 .uv/
 uv.lock
+# Terraform
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/terraform.tfvars
+terraform/tfplan
+
 # macOS resource forks
 ._*
 .DS_Store

@@ -53,7 +53,7 @@ public class MetricsCalculator {
         if (snapshots.isEmpty() || initialCash.compareTo(BigDecimal.ZERO) == 0) {
             return BigDecimal.ZERO;
         }
-        BigDecimal finalEquity = snapshots.getLast().equity();
+        BigDecimal finalEquity = snapshots.get(snapshots.size() - 1).equity();
         return finalEquity.subtract(initialCash, MC)
                 .divide(initialCash, SCALE, RoundingMode.HALF_UP);
     }
@@ -64,7 +64,7 @@ public class MetricsCalculator {
             return BigDecimal.ZERO;
         }
         long days = Duration.between(
-                snapshots.getFirst().timestamp(), snapshots.getLast().timestamp()
+                snapshots.get(0).timestamp(), snapshots.get(snapshots.size() - 1).timestamp()
         ).toDays();
         if (days <= 0) {
             return BigDecimal.ZERO;
@@ -110,7 +110,7 @@ public class MetricsCalculator {
 
         if (drawdownStart >= 0) {
             Duration d = Duration.between(
-                    snapshots.get(drawdownStart).timestamp(), snapshots.getLast().timestamp()
+                    snapshots.get(drawdownStart).timestamp(), snapshots.get(snapshots.size() - 1).timestamp()
             );
             if (d.compareTo(maxDuration) > 0) {
                 maxDuration = d;

@@ -38,7 +38,7 @@ public class SignalGenerator {
         }
 
         // B2/S2: Second buy/sell point (3 trigger conditions)
-        Divergence latestDiv = divergences.isEmpty() ? null : divergences.getLast();
+        Divergence latestDiv = divergences.isEmpty() ? null : divergences.get(divergences.size() - 1);
         signals.addAll(generateB2S2(trend, latestDiv, segments, centers, signals, instrument));
 
         // B3/S3: Third buy/sell point (center breakout)
@@ -118,7 +118,7 @@ public class SignalGenerator {
 
         for (Signal b1 : b1Signals) {
             if (!segments.isEmpty()) {
-                Segment recent = segments.getLast();
+                Segment recent = segments.get(segments.size() - 1);
                 if (recent.low().compareTo(b1.price()) >= 0 && recent.endTime() != null) {
                     signals.add(new Signal(
                             SignalType.B2, trend.level(), instrument,
@@ -132,7 +132,7 @@ public class SignalGenerator {
 
         for (Signal s1 : s1Signals) {
             if (!segments.isEmpty()) {
-                Segment recent = segments.getLast();
+                Segment recent = segments.get(segments.size() - 1);
                 if (recent.high().compareTo(s1.price()) <= 0 && recent.endTime() != null) {
                     signals.add(new Signal(
                             SignalType.S2, trend.level(), instrument,
@@ -168,8 +168,8 @@ public class SignalGenerator {
 
         // Condition 3: Small-to-large (小转大)
         if (!segments.isEmpty() && !centers.isEmpty()) {
-            Segment lastSeg = segments.getLast();
-            Center lastCenter = centers.getLast();
+            Segment lastSeg = segments.get(segments.size() - 1);
+            Center lastCenter = centers.get(centers.size() - 1);
             if (isSmallToLarge(lastSeg, lastCenter) && lastSeg.endTime() != null) {
                 SignalType sigType = lastSeg.direction() == Direction.DOWN
                         ? SignalType.B2 : SignalType.S2;
@@ -208,7 +208,7 @@ public class SignalGenerator {
         }
 
         List<Signal> signals = new ArrayList<>();
-        Center center = centers.getLast();
+        Center center = centers.get(centers.size() - 1);
 
         for (int i = 0; i < strokes.size() - 1; i++) {
             Stroke curr = strokes.get(i);

@@ -26,10 +26,15 @@ spec:
           env:
             - name: SPRING_PROFILES_ACTIVE
               value: k8s
+            - name: SPRING_CONFIG_ADDITIONAL_LOCATION
+              value: file:/config/
             - name: EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE
               value: http://eureka-server.zenalpha.svc.cluster.local:8761/eureka/
             - name: APOLLO_META
               value: http://apollo-configservice.zenalpha.svc.cluster.local:8080
+          volumeMounts:
+            - name: config
+              mountPath: /config
           resources:
             requests:
               cpu: 200m
@@ -51,3 +56,7 @@ spec:
             initialDelaySeconds: 30
             periodSeconds: 10
             failureThreshold: 3
+      volumes:
+        - name: config
+          configMap:
+            name: gateway-config

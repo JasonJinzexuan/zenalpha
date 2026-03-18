@@ -20,8 +20,8 @@ public class WebhookService {
 
     public WebhookService(RestTemplateBuilder builder) {
         this.restTemplate = builder
-                .connectTimeout(Duration.ofSeconds(5))
-                .readTimeout(Duration.ofSeconds(10))
+                .setConnectTimeout(Duration.ofSeconds(5))
+                .setReadTimeout(Duration.ofSeconds(10))
                 .build();
     }
 

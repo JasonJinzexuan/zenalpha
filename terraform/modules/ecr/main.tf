@@ -7,6 +7,7 @@ locals {
     "data-service",
     "user-service",
     "notification-service",
+    "agent-service",
     "frontend",
   ])
 }

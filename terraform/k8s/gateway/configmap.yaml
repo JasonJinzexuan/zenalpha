@@ -33,6 +33,12 @@ data:
               uri: lb://notification-service
               predicates:
                 - Path=/api/notifications/**
+            - id: agent-service
+              uri: http://agent-service.zenalpha.svc.cluster.local:8090
+              predicates:
+                - Path=/api/agents/**
+              filters:
+                - StripPrefix=2
           default-filters:
             - DedupeResponseHeader=Access-Control-Allow-Credentials Access-Control-Allow-Origin
     eureka:

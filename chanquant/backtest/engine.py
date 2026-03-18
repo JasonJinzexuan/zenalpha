@@ -138,7 +138,7 @@ class BacktestEngine:
         signals: list[Signal] = []
         for instrument, bar in bars.items():
             pipeline = pipelines[instrument]
-            state = pipeline.process_bar(bar)  # type: ignore[union-attr]
+            state = pipeline.feed(bar)  # type: ignore[union-attr]
             signals.extend(state.signals)
         return signals
 

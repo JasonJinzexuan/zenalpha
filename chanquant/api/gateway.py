@@ -132,7 +132,7 @@ async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
     pipeline = AnalysisPipeline()
     state = None
     for bar in klines:
-        state = pipeline.process_bar(bar)
+        state = pipeline.feed(bar)
 
     if state is None:
         raise HTTPException(status_code=400, detail="Pipeline produced no output")

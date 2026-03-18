@@ -112,8 +112,8 @@ public class DivergenceDetector {
         }
 
         // Use first and last segment of the center as exit comparison
-        Segment segA = centerSegments.getFirst();
-        Segment segC = centerSegments.getLast();
+        Segment segA = centerSegments.get(0);
+        Segment segC = centerSegments.get(centerSegments.size() - 1);
 
         if (segA.direction() != segC.direction()) {
             return null;
@@ -233,13 +233,13 @@ public class DivergenceDetector {
         long volA = 0;
         for (Stroke s : segA.strokes()) {
             if (!s.startFractal().elements().isEmpty()) {
-                volA += s.startFractal().elements().getFirst().volume();
+                volA += s.startFractal().elements().get(0).volume();
             }
         }
         long volC = 0;
         for (Stroke s : segC.strokes()) {
             if (!s.startFractal().elements().isEmpty()) {
-                volC += s.startFractal().elements().getFirst().volume();
+                volC += s.startFractal().elements().get(0).volume();
             }
         }
         if (volA == 0) {

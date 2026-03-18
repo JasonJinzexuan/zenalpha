@@ -36,7 +36,8 @@ public class MarketDataService {
                 ? entities.subList(0, limit)
                 : entities;
 
-        List<KLineEntity> chronological = limited.reversed();
+        List<KLineEntity> chronological = new java.util.ArrayList<>(limited);
+        java.util.Collections.reverse(chronological);
 
         return chronological.stream()
                 .map(KLineEntity::toRawKLine)

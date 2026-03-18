@@ -17,11 +17,11 @@ public record Segment(
         BigDecimal macdArea
 ) {
     public Stroke startStroke() {
-        return strokes.getFirst();
+        return strokes.get(0);
     }
 
     public Stroke endStroke() {
-        return strokes.getLast();
+        return strokes.get(strokes.size() - 1);
     }
 
     public LocalDateTime startTime() {

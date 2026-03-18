@@ -27,7 +27,7 @@ public class StrokeBuilder {
         }
 
         List<Stroke> strokes = new ArrayList<>();
-        Fractal start = fractals.getFirst();
+        Fractal start = fractals.get(0);
 
         for (int i = 1; i < fractals.size(); i++) {
             Fractal end = fractals.get(i);

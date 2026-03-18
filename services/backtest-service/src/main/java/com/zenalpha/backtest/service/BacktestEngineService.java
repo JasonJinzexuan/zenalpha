@@ -52,7 +52,7 @@ public class BacktestEngineService {
         }
 
         List<BigDecimal> atrValues = calculateATR(klines);
-        PortfolioSnapshot snapshot = PortfolioManager.initial(initialCash, klines.getFirst().timestamp());
+        PortfolioSnapshot snapshot = PortfolioManager.initial(initialCash, klines.get(0).timestamp());
         List<PortfolioSnapshot> snapshots = new ArrayList<>();
         snapshots.add(snapshot);
 
@@ -62,7 +62,7 @@ public class BacktestEngineService {
         for (int i = ATR_PERIOD; i < klines.size(); i++) {
             RawKLine kline = klines.get(i);
             BigDecimal currentPrice = kline.close();
-            BigDecimal atr = i < atrValues.size() ? atrValues.get(i) : atrValues.getLast();
+            BigDecimal atr = i < atrValues.size() ? atrValues.get(i) : atrValues.get(atrValues.size() - 1);
             LocalDateTime currentTime = kline.timestamp();
 
             highSinceEntry = highSinceEntry.max(kline.high());
@@ -87,8 +87,8 @@ public class BacktestEngineService {
             snapshots.add(snapshot);
         }
 
-        snapshot = closeAllPositions(snapshot, klines.getLast().close(), klines.getLast().timestamp());
-        if (!snapshot.positions().isEmpty() || snapshot != snapshots.getLast()) {
+        snapshot = closeAllPositions(snapshot, klines.get(klines.size() - 1).close(), klines.get(klines.size() - 1).timestamp());
+        if (!snapshot.positions().isEmpty() || snapshot != snapshots.get(snapshots.size() - 1)) {
             snapshots.add(snapshot);
         }
 
@@ -233,7 +233,7 @@ public class BacktestEngineService {
             } else if (i == ATR_PERIOD) {
                 atrValues.add(firstATR);
             } else {
-                BigDecimal prevATR = atrValues.getLast();
+                BigDecimal prevATR = atrValues.get(atrValues.size() - 1);
                 BigDecimal tr = trueRanges.get(i - 1);
                 BigDecimal newATR = prevATR.multiply(BigDecimal.valueOf(ATR_PERIOD - 1), MC)
                         .add(tr, MC)

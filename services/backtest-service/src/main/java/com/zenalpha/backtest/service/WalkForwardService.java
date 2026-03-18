@@ -50,8 +50,8 @@ public class WalkForwardService {
             int end = start + windowSize;
             List<RawKLine> windowKlines = klines.subList(start, end);
 
-            var windowStart = windowKlines.getFirst().timestamp();
-            var windowEnd = windowKlines.getLast().timestamp();
+            var windowStart = windowKlines.get(0).timestamp();
+            var windowEnd = windowKlines.get(windowKlines.size() - 1).timestamp();
             List<Signal> windowSignals = signals.stream()
                     .filter(s -> !s.timestamp().isBefore(windowStart)
                             && !s.timestamp().isAfter(windowEnd))

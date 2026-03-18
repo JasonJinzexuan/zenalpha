@@ -65,8 +65,8 @@ public class MonteCarloTest {
                 percentile(simulatedReturns, 75),
                 percentile(simulatedReturns, 95),
                 mean(simulatedReturns),
-                simulatedReturns.getFirst(),
-                simulatedReturns.getLast(),
+                simulatedReturns.get(0),
+                simulatedReturns.get(simulatedReturns.size() - 1),
                 (double) profitCount / numSimulations
         );
     }

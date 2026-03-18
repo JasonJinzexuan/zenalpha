@@ -26,7 +26,7 @@ public class SegmentBuilder {
 
         List<Segment> segments = new ArrayList<>();
         List<Stroke> buffer = new ArrayList<>();
-        Direction segDirection = strokes.getFirst().direction();
+        Direction segDirection = strokes.get(0).direction();
 
         for (Stroke stroke : strokes) {
             buffer.add(stroke);
@@ -39,7 +39,7 @@ public class SegmentBuilder {
             // Check first 3 strokes have overlap (segment formation condition)
             if (buffer.size() == 3 && !hasInitialOverlap(buffer)) {
                 buffer.remove(0);
-                segDirection = buffer.getFirst().direction();
+                segDirection = buffer.get(0).direction();
                 continue;
             }
 
@@ -50,7 +50,7 @@ public class SegmentBuilder {
                 segments.add(seg);
 
                 // Last stroke starts new segment
-                Stroke last = buffer.getLast();
+                Stroke last = buffer.get(buffer.size() - 1);
                 buffer.clear();
                 buffer.add(last);
                 segDirection = last.direction();
@@ -112,10 +112,10 @@ public class SegmentBuilder {
         }
 
         List<CharElement> result = new ArrayList<>();
-        result.add(elements.getFirst());
+        result.add(elements.get(0));
 
         for (int i = 1; i < elements.size(); i++) {
-            CharElement last = result.getLast();
+            CharElement last = result.get(result.size() - 1);
             CharElement elem = elements.get(i);
 
             if (charContainment(last, elem)) {

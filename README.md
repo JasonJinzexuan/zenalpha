@@ -249,7 +249,7 @@ Terraform 一键创建：
 | ECR | 8 repositories (每服务一个) |
 | ALB | Gateway 入口, HTTP/HTTPS |
 
-Region: `us-east-1`
+Region: `us-west-2`
 
 ---
 

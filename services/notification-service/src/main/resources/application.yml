@@ -17,7 +17,7 @@ spring:
       hibernate:
         dialect: org.hibernate.dialect.MySQLDialect
   mail:
-    host: ${MAIL_HOST:email-smtp.us-east-1.amazonaws.com}
+    host: ${MAIL_HOST:email-smtp.us-west-2.amazonaws.com}
     port: ${MAIL_PORT:587}
     username: ${MAIL_USERNAME:}
     password: ${MAIL_PASSWORD:}

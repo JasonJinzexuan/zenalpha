@@ -41,7 +41,7 @@ echo "  CloudFront: $CF_DOMAIN"
 # Step 2: Configure kubectl
 echo ""
 echo "[2/4] Configuring kubectl..."
-aws eks update-kubeconfig --name "$EKS_CLUSTER" --region us-east-1
+aws eks update-kubeconfig --name "$EKS_CLUSTER" --region us-west-2
 
 # Step 3: Initialize database
 echo ""

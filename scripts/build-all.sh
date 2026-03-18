@@ -53,7 +53,7 @@ echo ""
 # Tag and push to ECR if registry is set
 if [ -n "$ECR_REGISTRY" ]; then
     echo "Pushing to ECR: $ECR_REGISTRY"
-    aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+    aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
     for entry in "${SERVICES[@]}"; do
         service="${entry%%:*}"

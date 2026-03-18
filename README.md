@@ -10,26 +10,89 @@
 
 **不是**投资助手、不是交易系统、不接交易所 API。
 
+---
+
+## 架构
+
+```
+                    ┌──────────────────────────────────┐
+                    │         CloudFront + S3           │
+                    │      Vue 3 SPA (前端)             │
+                    └──────────────┬───────────────────┘
+                                   │ HTTPS
+                    ┌──────────────▼───────────────────┐
+                    │      Spring Cloud Gateway         │
+                    │    (JWT 验证 + 路由 + CORS)       │
+                    │         port 8080                 │
+                    └──┬────┬────┬────┬────┬───────────┘
+                       │    │    │    │    │
+          ┌────────────▼┐ ┌▼────▼┐ ┌▼────▼──┐ ┌────────▼─┐
+          │   signal    │ │back- │ │ data   │ │  user    │
+          │   service   │ │test  │ │service │ │ service  │
+          │  (L0-L9)   │ │svc   │ │        │ │ (JWT)    │
+          │  port 8081  │ │8082  │ │ 8083   │ │  8084    │
+          └──────┬──────┘ └──┬───┘ └───┬────┘ └────┬─────┘
+                 │           │         │            │
+          ┌──────▼───────────▼─────────▼────────────▼─────┐
+          │                 RDS MySQL 8.0                  │
+          └───────────────────────────────────────────────┘
+
+     Eureka (服务注册)        Apollo (配置中心)       notification-service (8085)
+```
+
+| 层 | 技术 |
+|----|------|
+| 前端 | Vue 3 + TypeScript + Vite + Element Plus + Lightweight Charts |
+| API 网关 | Spring Cloud Gateway + JWT |
+| 微服务 | Spring Boot 3.2 + Spring Cloud 2023 (Java 17) |
+| 注册中心 | Eureka Server |
+| 配置中心 | Apollo Config |
+| 数据库 | RDS MySQL 8.0 |
+| 容器编排 | EKS (Kubernetes 1.29) |
+| 前端部署 | CloudFront + S3 (OAC) |
+| IaC | Terraform 1.7+ |
+
+---
+
 ## 快速开始
 
+### 本地开发
+
 ```bash
-# 安装
 git clone https://github.com/JasonJinzexuan/zenalpha.git
 cd zenalpha
-uv sync
 
-# 分析
-uv run zenalpha analyze AAPL --data data/aapl_daily.json
+# 后端 — 需要 JDK 17 + Maven 3.9+
+cd services
+mvn clean package -DskipTests
 
-# 回测
-uv run zenalpha backtest AAPL --data data/aapl_daily.json --start 2021-01-01 --end 2026-01-01
-
-# 验证算法
-uv run zenalpha validate tests/fixtures/
-
-# 测试
-uv run pytest tests/ -v
+# 前端 — 需要 Node 20+
+cd ../frontend
+npm install
+npm run dev         # http://localhost:3000
 ```
+
+### Python CLI（Phase 0+1 遗留）
+
+```bash
+uv sync
+uv run zenalpha analyze AAPL --data data/aapl_daily.json
+uv run zenalpha backtest AAPL --data data/aapl_daily.json --start 2021-01-01 --end 2026-01-01
+```
+
+### 一键部署（AWS）
+
+```bash
+# 1. 配置 Terraform
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+# 编辑 terraform.tfvars 填入 DB 密码等
+
+# 2. 一键部署
+../scripts/deploy.sh
+```
+
+---
 
 ## 10 层算法管道
 
@@ -37,22 +100,22 @@ uv run pytest tests/ -v
 Raw K-Line
     │
     ▼
-┌─────────────────────────────────────────────────────────────┐
-│  L0  包含关系处理    kline.py       纯规则，无歧义          │
-│  L1  分型识别        fractal.py     顶/底分型 + 交替处理    │
-│  L2  笔的划分        stroke.py      ≥5根K线 + 方向校验      │
-│  MACD 增量计算       macd.py        EMA(12,26,9)            │
-├─────────────────────────────────────────────────────────────┤
-│  L3  线段划分        segment.py     特征序列 + 第二种情况    │
-│  L4  中枢识别        center.py      ZG/ZD/GG/DD + 延伸/新生 │
-│  L5  趋势分类        trend.py       盘整/上升/下降 + a+A+b+B+c │
-│  L6  背驰判断        divergence.py  a段 vs c段 MACD面积     │
-│  L7  买卖点生成      signal.py      B1/S1 + B2/S2 + B3/S3  │
-│  L8  区间套          nesting.py     多级别递进定位           │
-├─────────────────────────────────────────────────────────────┤
-│  L9  评分排序        scorer.py      5维加权 + 过滤           │
-│  L10 风控执行        position.py    ATR仓位 + 多层止损       │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  L0  包含关系处理    KLineProcessor       纯规则，无歧义        │
+│  L1  分型识别        FractalDetector       顶/底分型 + 交替处理  │
+│  L2  笔的划分        StrokeBuilder         ≥5根K线 + 方向校验    │
+│  MACD 增量计算       MACDCalculator        EMA(12,26,9)          │
+├─────────────────────────────────────────────────────────────────┤
+│  L3  线段划分        SegmentBuilder        特征序列 + 第二种情况  │
+│  L4  中枢识别        CenterDetector        ZG/ZD/GG/DD + 延伸    │
+│  L5  趋势分类        TrendClassifier       盘整/上升/下降         │
+│  L6  背驰判断        DivergenceDetector    a段 vs c段 MACD面积   │
+│  L7  买卖点生成      SignalGenerator       B1/S1 + B2/S2 + B3/S3 │
+│  L8  区间套          IntervalNester        多级别递进定位         │
+├─────────────────────────────────────────────────────────────────┤
+│  L9  评分排序        SignalScorer          5维加权 + 过滤         │
+│  L10 风控执行        PositionSizer         ATR仓位 + 多层止损     │
+└─────────────────────────────────────────────────────────────────┘
     │
     ▼
 Signal / ScanResult
@@ -60,130 +123,171 @@ Signal / ScanResult
 
 每层规则均对应缠论 108 课原文出处，详见 [docs/algorithm.md](docs/algorithm.md)。
 
+### 关键修正（vs 常见开源实现）
+
+| # | 层级 | 修正内容 | 原文依据 |
+|---|------|---------|---------|
+| 1 | L3 | 补充第二种情况（缺口 → 反向特征序列二次确认） | 第 067 课 |
+| 2 | L6 | 比较对象修正为 a 段 vs c 段（非 b vs c） | 第 024/037 课 |
+| 3 | L6 | c 段必须含对 B 中枢的第三类买卖点 | 第 037 课 |
+| 4 | L7 | B2 补充盘整背驰 + 小转大两个触发条件 | 第 053 课 |
+| 5 | L8 | 替换加权评分为区间套递进定位 | 第 030 课 |
+
+---
+
 ## 项目结构
 
 ```
 zenalpha/
-├── chanquant/
-│   ├── core/               # L0-L8 核心算法
-│   │   ├── objects.py       # 所有数据结构 (frozen dataclass + Decimal)
-│   │   ├── macd.py          # MACD/DIF/DEA 增量计算
-│   │   ├── kline.py         # L0 包含关系处理
-│   │   ├── fractal.py       # L1 分型识别
-│   │   ├── stroke.py        # L2 笔的划分
-│   │   ├── segment.py       # L3 线段划分 (含第二种情况)
-│   │   ├── center.py        # L4 中枢识别
-│   │   ├── trend.py         # L5 趋势与盘整分类
-│   │   ├── divergence.py    # L6 背驰判断 (a vs c, 非 b vs c)
-│   │   ├── signal.py        # L7 三类买卖点生成
-│   │   ├── nesting.py       # L8 区间套 (确定性 fallback)
-│   │   └── pipeline.py      # L0-L8 完整管道
-│   ├── scoring/             # L9 评分层
-│   │   ├── scorer.py        # 多维评分公式
-│   │   └── filter.py        # 过滤 + 排序
-│   ├── execution/           # L10 风控层 (实验性/仅限回测)
-│   │   └── position.py      # ATR仓位计算 + 多层止损
-│   ├── data/                # 数据接入层
-│   │   ├── base.py          # DataSource Protocol
-│   │   ├── polygon.py       # Polygon.io REST client
-│   │   └── csv_loader.py    # CSV/JSON 加载器
-│   ├── backtest/            # 回测引擎
-│   │   ├── engine.py        # 事件驱动回测
-│   │   ├── portfolio.py     # 不可变 Portfolio 状态
-│   │   ├── slippage.py      # 滑点 + 佣金 + 市场冲击
-│   │   ├── metrics.py       # Sharpe/Calmar/Sortino/MaxDD
-│   │   └── walk_forward.py  # Walk-forward + Monte Carlo
-│   └── cli/
-│       └── main.py          # typer CLI (analyze/backtest/validate)
-├── tests/
-│   ├── fixtures/            # 测试用 K 线数据 (JSON)
-│   └── unit/                # 59 个单元测试
-├── docs/                    # 文档
-│   ├── algorithm.md         # 算法规格 (10层详解)
-│   └── architecture.md      # 架构设计
-└── pyproject.toml
+├── frontend/                          # Vue 3 SPA
+│   ├── src/
+│   │   ├── views/                     # Dashboard, Analysis, Scanner, Backtest, Settings
+│   │   ├── components/                # KLineChart, SignalTable, MetricsCard, CenterOverlay
+│   │   ├── stores/                    # Pinia (signal, backtest, user)
+│   │   ├── api/                       # Axios clients
+│   │   └── types/                     # TypeScript 类型定义
+│   └── Dockerfile
+│
+├── services/                          # Java 微服务 (Maven multi-module)
+│   ├── pom.xml                        # Parent POM (Spring Boot 3.2 + Spring Cloud 2023)
+│   ├── common/                        # 共享: 8 Enum + 16 Record + DTO + Exception
+│   ├── eureka-server/                 # 服务注册中心 (port 8761)
+│   ├── gateway/                       # API 网关 + JWT 验证 (port 8080)
+│   ├── signal-service/                # 核心: 10层算法引擎 + 评分 (port 8081)
+│   │   └── engine/                    # MACDCalculator → ... → AnalysisPipeline
+│   ├── backtest-service/              # 回测引擎 + 风控 (port 8082)
+│   ├── data-service/                  # 行情数据 + Polygon.io (port 8083)
+│   ├── user-service/                  # JWT 认证 + Watchlist (port 8084)
+│   └── notification-service/          # 邮件 + Webhook 通知 (port 8085)
+│
+├── terraform/                         # AWS IaC
+│   ├── modules/
+│   │   ├── vpc/                       # 3 AZ, public/private subnets, NAT
+│   │   ├── eks/                       # EKS 1.29 + managed node group
+│   │   ├── rds/                       # MySQL 8.0
+│   │   ├── ecr/                       # 8 个容器镜像仓库
+│   │   ├── frontend/                  # S3 + CloudFront (OAC)
+│   │   └── alb/                       # Application Load Balancer
+│   └── k8s/                           # Kubernetes 部署清单
+│       ├── eureka/                    # StatefulSet
+│       ├── apollo/                    # ConfigDB init + Deployments
+│       ├── gateway/                   # Deployment + LoadBalancer Service
+│       ├── signal-service/            # Deployment + HPA (2-5 pods)
+│       ├── data-service/              # Deployment + HPA (2-4 pods)
+│       └── ...                        # backtest, user, notification
+│
+├── scripts/
+│   ├── init-db.sql                    # MySQL 10 张表 DDL
+│   ├── build-all.sh                   # 构建全部 Docker 镜像 + 推送 ECR
+│   └── deploy.sh                      # Terraform apply + K8s deploy
+│
+├── chanquant/                         # Python CLI (Phase 0+1, 保留)
+├── tests/                             # Python 单元测试
+└── docs/
+    └── algorithm.md                   # 算法规格 (10层详解 + 修正说明)
 ```
+
+---
+
+## REST API
+
+### Gateway 路由
+
+| Path | Service | 说明 |
+|------|---------|------|
+| `POST /api/signals/analyze` | signal-service | 单标的缠论分析 |
+| `POST /api/signals/scan` | signal-service | 全市场扫描排序 |
+| `POST /api/backtest/run` | backtest-service | 运行回测 |
+| `GET /api/data/klines/{symbol}` | data-service | 获取 K 线数据 |
+| `POST /api/data/klines/sync` | data-service | 从 Polygon.io 同步 |
+| `GET /api/data/instruments` | data-service | 标的列表 |
+| `POST /api/users/register` | user-service | 用户注册 |
+| `POST /api/users/login` | user-service | 登录 (返回 JWT) |
+| `GET /api/users/watchlists` | user-service | 自选股列表 |
+| `POST /api/notifications/config` | notification-service | 通知配置 |
+
+---
+
+## 前端页面
+
+| 页面 | 功能 |
+|------|------|
+| **Dashboard** | 信号概览面板：Top 信号表格 + 买/卖统计 + 平均评分 |
+| **Analysis** | 单标的分析：K 线图 (Lightweight Charts) + 笔/线段/中枢叠加 + 信号标注 |
+| **Scanner** | 全市场扫描：预设标的组 + 过滤器 + 评分排序 |
+| **Backtest** | 回测界面：配置表单 + 指标卡片 (Sharpe/Sortino/MaxDD) + 交易日志 |
+| **Settings** | 用户设置 + 通知配置 (邮件/Webhook) |
+
+---
+
+## MySQL 表结构
+
+10 张表，跨 4 个服务：
+
+| Service | Tables |
+|---------|--------|
+| data-service | `instrument`, `kline` |
+| signal-service | `signal_record`, `scan_result` |
+| backtest-service | `backtest_result`, `trade` |
+| user-service | `user`, `watchlist` |
+| notification-service | `notification_config`, `notification_log` |
+
+初始化：`mysql -h <RDS_ENDPOINT> -u admin -p < scripts/init-db.sql`
+
+---
+
+## AWS 基础设施
+
+Terraform 一键创建：
+
+| 资源 | 规格 |
+|------|------|
+| VPC | 3 AZ, 6 subnets (3 public + 3 private), 1 NAT GW |
+| EKS | Kubernetes 1.29, t3.medium × 3 node group |
+| RDS | MySQL 8.0, db.t3.medium, private subnet |
+| CloudFront | S3 origin (OAC), SPA routing, 24h cache |
+| ECR | 8 repositories (每服务一个) |
+| ALB | Gateway 入口, HTTP/HTTPS |
+
+Region: `us-east-1`
+
+---
 
 ## 设计原则
 
 | 原则 | 实现 |
 |------|------|
-| **Decimal 精度** | 所有价格/金融数值用 `Decimal`，核心算法无 `float` |
-| **不可变数据** | 全部 `@dataclass(frozen=True)`，方法返回新对象 |
-| **Feed-forward 流式** | 每个 Processor 有 `feed()` 方法，逐根 K 线增量计算 |
-| **无外部依赖** | 核心算法仅用标准库 + Decimal，不依赖 pandas/numpy |
-| **原文可追溯** | 每个信号附带 `source_lesson` 字段，映射缠论原文课号 |
+| **BigDecimal 精度** | 所有价格/金融数值用 `BigDecimal`，核心算法无 `float` |
+| **不可变数据** | Java `record` + `List.of()`；Python `@dataclass(frozen=True)` |
+| **微服务隔离** | 每服务独立数据库表、独立部署、独立扩缩 |
+| **原文可追溯** | 每个信号附带 `sourceLesson` 字段，映射缠论原文课号 |
+| **IaC** | 全部基础设施 Terraform 管理，零手动配置 |
 
-## 关键修正（vs 常见开源实现）
-
-1. **L3 线段第二种情况**：缺口 → 反向特征序列二次确认（多数实现遗漏）
-2. **L6 背驰比较对象**：a 段 vs c 段（非 b vs c），原文第024课明确
-3. **L6 c 段前提**：c 必须含对 B 中枢的第三类买卖点（第037课）
-4. **L7 B2 三条件**：不创新低 / 盘整背驰 / 小转大（第053课）
-5. **L8 区间套**：递进定位（非加权评分），原文第030课
-
-## CLI 命令
-
-### `zenalpha analyze`
-
-单标的缠论结构分析，输出各层统计和信号。
-
-```bash
-uv run zenalpha analyze AAPL --level 1d --data path/to/data.json
-```
-
-### `zenalpha backtest`
-
-事件驱动回测，输出 Sharpe/Sortino/Calmar/MaxDD 等指标。
-
-```bash
-uv run zenalpha backtest AAPL --data path/to/data.json \
-  --start 2021-01-01 --end 2026-01-01 --cash 1000000
-```
-
-### `zenalpha validate`
-
-用 fixture 数据验证 L0-L3 算法正确性。
-
-```bash
-uv run zenalpha validate tests/fixtures/
-```
-
-## 数据格式
-
-输入数据为 JSON 数组，每条记录：
-
-```json
-{
-  "timestamp": "2024-01-02T00:00:00",
-  "open": 100.0,
-  "high": 102.0,
-  "low": 99.0,
-  "close": 101.5,
-  "volume": 1000000
-}
-```
-
-也支持通过 `PolygonClient` 从 Polygon.io API 实时拉取。
-
-## 技术栈
-
-- Python 3.12+
-- `uv` 包管理
-- `httpx` — Polygon.io HTTP 客户端
-- `typer` + `rich` — CLI
-- `pytest` — 测试
-- 无 pandas / numpy / ta-lib 依赖
+---
 
 ## 开发路线
 
 | Phase | 内容 | 状态 |
 |-------|------|------|
-| **0+1** | 10层算法管道 + 回测引擎 + CLI | **Done** |
-| 2 | LLM Agent 编排 (LangGraph + Bedrock) | Planned |
-| 3 | AWS CDK 部署 (Lambda + DynamoDB + EventBridge) | Planned |
-| 4 | 前端 (Next.js + K线可视化) | Planned |
-| 5 | 加密货币扩展 (Binance) | Planned |
+| **0+1** | 10 层算法管道 + 回测引擎 + Python CLI | **Done** |
+| **2** | Vue 前端 + Java 微服务 + Terraform + K8s | **Done** |
+| 3 | LLM Agent 编排 (LangGraph + Bedrock) | Planned |
+| 4 | 加密货币扩展 (Binance WebSocket) | Planned |
+| 5 | 实时信号推送 (WebSocket + SNS) | Planned |
+
+---
+
+## 代码量
+
+| 模块 | 文件数 | 代码行数 |
+|------|--------|----------|
+| services/ (Java) | 108 | ~6,400 |
+| frontend/ (Vue+TS) | 20 | ~1,600 |
+| terraform/ (HCL) | 22 | ~1,350 |
+| k8s/ (YAML) | 22 | ~900 |
+| chanquant/ (Python) | 15 | ~1,700 |
+| scripts + SQL | 3 | ~400 |
+| **Total** | **~210** | **~12,350** |
 
 ## License
 

@@ -332,9 +332,10 @@ zenalpha/
 
 Region: `us-west-2`
 
-> **📖 完整部署文档 / Full Deployment Guide: [docs/deployment-guide.md](docs/deployment-guide.md)**
+> **📖 完整部署文档：[docs/deployment-guide-zh.md](docs/deployment-guide-zh.md)**
+> **📖 Deployment Guide (EN): [docs/deployment-guide-en.md](docs/deployment-guide-en.md)**
 >
-> 包含 Terraform、Karpenter、K8s、InfluxDB、Apollo、前端的分步指南，中英双语。
+> 包含 Terraform、Karpenter、K8s、InfluxDB、Apollo、前端的分步指南、密钥管理、运维手册和故障排查。
 
 ---
 

@@ -78,6 +78,13 @@ variable "db_storage_gb" {
   default     = 20
 }
 
+# InfluxDB
+variable "influxdb_password" {
+  description = "Timestream for InfluxDB admin password"
+  type        = string
+  sensitive   = true
+}
+
 # Domain
 variable "domain_name" {
   description = "Domain name for the application (optional)"

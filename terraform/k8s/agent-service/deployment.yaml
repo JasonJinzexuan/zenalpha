@@ -4,7 +4,7 @@ metadata:
   name: agent-service
   namespace: zenalpha
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::110299474182:role/zenalpha-agent-bedrock
+    eks.amazonaws.com/role-arn: arn:aws:iam::110299474182:role/zenalpha-agent-timestream
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -26,13 +26,31 @@ spec:
       serviceAccountName: agent-service
       containers:
         - name: agent-service
-          image: ${ECR_REGISTRY}/zenalpha/agent-service:latest
+          image: 110299474182.dkr.ecr.us-west-2.amazonaws.com/zenalpha/agent-service:latest
           ports:
             - containerPort: 8090
               name: http
           env:
             - name: AWS_DEFAULT_REGION
               value: us-west-2
+            - name: INFLUXDB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: agent-secrets
+                  key: influxdb-url
+                  optional: true
+            - name: INFLUXDB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: agent-secrets
+                  key: influxdb-token
+                  optional: true
+            - name: POLYGON_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agent-secrets
+                  key: polygon-api-key
+                  optional: true
           resources:
             requests:
               cpu: 250m

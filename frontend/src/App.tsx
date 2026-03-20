@@ -8,6 +8,7 @@ import PositionsPage from '@/pages/PositionsPage'
 import ReviewPage from '@/pages/ReviewPage'
 import BacktestPage from '@/pages/BacktestPage'
 import SettingsPage from '@/pages/SettingsPage'
+import PipelinePage from '@/pages/PipelinePage'
 
 export default function App() {
   return (
@@ -22,6 +23,7 @@ export default function App() {
           <Route path="/positions" element={<PositionsPage />} />
           <Route path="/review" element={<ReviewPage />} />
           <Route path="/backtest" element={<BacktestPage />} />
+          <Route path="/pipeline" element={<PipelinePage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/" element={<Navigate to="/overview" replace />} />
         </Route>

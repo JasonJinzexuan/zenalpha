@@ -22,8 +22,8 @@ _TIMEFRAME_MAP: dict[TimeFrame, tuple[int, str]] = {
 }
 
 _BASE_URL = "https://api.polygon.io"
-_MAX_RETRIES = 3
-_INITIAL_BACKOFF = 1.0
+_MAX_RETRIES = 5
+_INITIAL_BACKOFF = 0.5  # Unlimited tier
 
 
 class PolygonClient:
@@ -48,17 +48,40 @@ class PolygonClient:
         multiplier, timespan = _TIMEFRAME_MAP[timeframe]
         to_date = datetime.now(tz=timezone.utc)
         from_date = _calculate_from_date(to_date, timeframe, limit)
+        return await self._fetch_range(instrument, timeframe, from_date, to_date, limit)
 
-        data = await self._request(
+    async def _fetch_range(
+        self,
+        instrument: str,
+        timeframe: TimeFrame,
+        from_date: datetime,
+        to_date: datetime,
+        limit: int,
+    ) -> Sequence[RawKLine]:
+        multiplier, timespan = _TIMEFRAME_MAP[timeframe]
+
+        all_results: list[dict[str, Any]] = []
+        path = (
             f"/v2/aggs/ticker/{instrument}/range"
             f"/{multiplier}/{timespan}"
-            f"/{_fmt_date(from_date)}/{_fmt_date(to_date)}",
-            params={"limit": limit, "sort": "asc"},
+            f"/{_fmt_date(from_date)}/{_fmt_date(to_date)}"
         )
+        params: dict[str, Any] = {"limit": limit, "sort": "asc"}
 
-        results: list[dict[str, Any]] = data.get("results", [])
+        while len(all_results) < limit:
+            data = await self._request(path, params=params)
+            results = data.get("results", [])
+            if not results:
+                break
+            all_results.extend(results)
+            next_url = data.get("next_url")
+            if not next_url:
+                break
+            # next_url is absolute; extract path + query for next page
+            path, params = _parse_next_url(next_url)
+
         return tuple(
-            _to_raw_kline(bar, timeframe) for bar in results
+            _to_raw_kline(bar, timeframe) for bar in all_results[:limit]
         )
 
     async def get_instruments(self) -> Sequence[str]:
@@ -113,10 +136,23 @@ def _calculate_from_date(
     if timeframe == TimeFrame.WEEKLY:
         return to_date - timedelta(weeks=limit)
     if timeframe == TimeFrame.DAILY:
-        return to_date - timedelta(days=limit)
+        return to_date - timedelta(days=int(limit * 1.5))  # buffer for weekends/holidays
     multiplier, _ = _TIMEFRAME_MAP[timeframe]
-    return to_date - timedelta(minutes=multiplier * limit)
+    # For intraday, add buffer for non-trading hours
+    return to_date - timedelta(minutes=int(multiplier * limit * 2.5))
 
 
 def _fmt_date(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%d")
+
+
+def _parse_next_url(next_url: str) -> tuple[str, dict[str, Any]]:
+    """Extract path and params from Polygon next_url for pagination."""
+    from urllib.parse import urlparse, parse_qs
+
+    parsed = urlparse(next_url)
+    path = parsed.path
+    qs = parse_qs(parsed.query, keep_blank_values=True)
+    params: dict[str, Any] = {k: v[0] for k, v in qs.items()}
+    params.pop("apiKey", None)  # _request adds it automatically
+    return path, params

@@ -219,33 +219,155 @@ class DataSource(Protocol):
 - 支持 JSON (同 CLI 输入格式)
 - 自动解析 ISO 8601 时间戳
 
-## 扩展路径
+## LangGraph LLM Pipeline（已实现）
 
-### Phase 2: LLM Agent 编排
+L0-L2 保持确定性算法，L3-L8 替换为 LLM Agent，通过 LangGraph StateGraph 编排。
 
-```
-pipeline.py 的 L3-L8 各层增加 LLM fallback:
-  代码先做确定性判断
-  → 边界 case 时调用 LLM Agent 仲裁
-  → Agent 返回带 reasoning 的判断
-
-LangGraph State Schema:
-  每层 Agent 读写共享 state
-  Supervisor 控制路由
-```
-
-### Phase 3: AWS 部署
+### 架构
 
 ```
-EventBridge (cron) → Lambda (pipeline) → DynamoDB (signals)
-                                       → SNS (告警)
-API Gateway → Lambda → DynamoDB (查询)
+Phase 1: 确定性计算                    Phase 2: LLM Agent (LangGraph)
+┌─────────────────────────┐           ┌──────────────────────────────────────────┐
+│ RawKLine                │           │                                          │
+│   → L0 K线合并          │           │  ┌──────────┐  条件路由  ┌────────────┐  │
+│   → L1 分型检测          │  state   │  │ L3 线段   ├──────────▶│ L4-L5 中枢  │  │
+│   → L2 笔构建+MACD面积   ├─────────▶│  │ Agent    │  有线段    │ +走势 Agent │  │
+│                          │           │  └──────────┘           └──────┬─────┘  │
+└─────────────────────────┘           │       │ 无线段                  │        │
+                                       │       ▼                 有趋势  │ 无趋势 │
+                                       │  ┌──────────┐    ┌────────────┘        │
+                                       │  │ L7 信号   │◀───┤                     │
+                                       │  │ Agent    │    │  ┌──────────┐       │
+                                       │  └────┬─────┘    └──┤ L6 背驰  │       │
+                                       │       │ 有信号      │ Agent    │       │
+                                       │       ▼             └──────────┘       │
+                                       │  ┌──────────┐                          │
+                                       │  │ L8 区间套 │                          │
+                                       │  │ Agent    │                          │
+                                       │  └──────────┘                          │
+                                       └──────────────────────────────────────────┘
 ```
 
-### Phase 4: 前端
+### 共享状态
+
+```python
+class LLMPipelineState(TypedDict, total=False):
+    instrument: str
+    level: str
+    standard_klines: list[dict]    # L0-L2 输出
+    fractals: list[dict]
+    strokes: list[dict]
+    macd_values: list[dict]
+    segments: list[dict]           # L3 Agent 输出
+    centers: list[dict]            # L4-L5 Agent 输出
+    trend: dict | None
+    divergence: dict | None        # L6 Agent 输出
+    signals: list[dict]            # L7 Agent 输出
+    nesting: dict | None           # L8 Agent 输出
+    errors: list[str]
+```
+
+### 模型配置
+
+所有 Agent 使用 Claude Sonnet 4.6 via AWS Bedrock (inference profile)：
+
+| Agent | Model ID | 用途 |
+|-------|----------|------|
+| segment-agent | `global.anthropic.claude-sonnet-4-6` | 线段终结判断 |
+| structure-agent | `global.anthropic.claude-sonnet-4-6` | 中枢检测+走势分类 |
+| divergence-agent | `global.anthropic.claude-sonnet-4-6` | MACD背驰判断 |
+| signal-agent | `global.anthropic.claude-sonnet-4-6` | 买卖点信号生成 |
+| nesting-agent | `global.anthropic.claude-sonnet-4-6` | 多级别区间套 |
+
+### 条件路由
+
+- `segment → structure`: 有线段则进入中枢分析，否则跳到信号
+- `structure → divergence`: 有趋势（UP/DOWN）则检测背驰，盘整跳到信号
+- `signal → nesting`: 有信号则进入区间套，否则结束
+
+### 关键实现
+
+- **JSON-only 输出**: 系统提示末尾追加 `_JSON_SUFFIX` 强制 LLM 返回纯 JSON
+- **JSON 提取**: `_extract_json()` 处理 markdown code block、trailing comma、单引号
+- **异步执行**: `asyncio.to_thread()` 防止同步 LLM 调用阻塞 uvicorn 事件循环
+- **Stage 追踪**: `run_llm_analysis_with_stages()` 记录每个节点的输入摘要、输出 diff、耗时
+
+### API 端点
+
+| 端点 | 说明 |
+|------|------|
+| `GET /analyze/langgraph/{instrument}` | 运行 LLM Pipeline，返回最终结果 |
+| `GET /analyze/langgraph/{instrument}/stages` | 运行 Pipeline + 返回每阶段输入/输出/耗时 |
+
+### 前端 Pipeline 可视化
+
+`/pipeline` 页面展示 LangGraph 执行全过程：
+- 每个 stage 可展开查看 INPUT/OUTPUT JSON
+- Timeline 时间条按耗时比例着色
+- 最终输出（signals, segments, centers 等）可折叠查看
+
+## 数据同步架构
+
+### 多级别数据源
+
+区间套分析需要 4 个级别的 K 线数据，全部存储在 InfluxDB (Timestream)：
+
+| 级别 | 角色 | 回填深度 | 说明 |
+|------|------|---------|------|
+| 1w | 方向层 | 4 年 | 判断大方向 |
+| 1d | 位置层 | 2 年 | 判断当前位置 |
+| 30m | 精确层 | 60 天 | 精确买卖点 |
+| 5m | 操作层 | 14 天 | 入场时机 |
+
+### 数据流
 
 ```
-Next.js + Lightweight Charts
-K 线图上叠加: 笔/线段/中枢/信号标注
-实时 WebSocket 推送新信号
+Polygon.io REST API
+        │
+        ├── 初始回填: scripts/sync_polygon_influxdb.py --backfill
+        │   (本地或集群内运行，需连 InfluxDB VPC)
+        │
+        ├── 每日增量: CronJob (UTC 01:00)
+        │   curl → agent-service /ingest/bulk
+        │   19 instruments × 5 timeframes, 13s/req (Polygon free tier)
+        │
+        └── 手动单个: POST /ingest
+            {instrument, level, limit}
+```
+
+### Polygon Rate Limit
+
+- Free tier: 5 requests/minute
+- `polygon.py` retry: 5 次, backoff 从 13s 起
+- `/ingest/bulk` 端点: 每次请求间隔 13s
+- CronJob `activeDeadlineSeconds: 1800` (30 分钟)
+
+## 部署架构（已实现）
+
+```
+┌──────────────── AWS Cloud ────────────────────────────────────────┐
+│                                                                    │
+│  CloudFront + WAF ──── S3 (React SPA)                             │
+│       │                                                            │
+│       │ /api/*                                                     │
+│       ▼                                                            │
+│  ALB (K8s LoadBalancer Service)                                    │
+│       │                                                            │
+│  ┌────▼──── EKS 集群 ────────────────────────────────────────┐    │
+│  │                                                            │    │
+│  │  agent-service (Python FastAPI)                            │    │
+│  │    ├── 缠论引擎 (L0-L2 确定性)                            │    │
+│  │    ├── LangGraph LLM Pipeline (L3-L8 Agent)               │    │
+│  │    ├── /ingest + /ingest/bulk (Polygon → InfluxDB)        │    │
+│  │    └── CronJob: daily-ingest (UTC 01:00)                  │    │
+│  │                                                            │    │
+│  │  Spring Cloud 微服务 (gateway, user, data, signal, ...)   │    │
+│  └────────────────────────────────────────────────────────────┘    │
+│                                                                    │
+│  RDS MySQL 8.0          Timestream InfluxDB v2                    │
+│  (关系型数据)            (OHLCV K线 × 5级别)                      │
+│                                                                    │
+│  Bedrock (Claude Sonnet 4.6, inference profile)                   │
+│                                                                    │
+└────────────────────────────────────────────────────────────────────┘
 ```

@@ -68,7 +68,7 @@
 │  │    ├── signal-service (缠论信号)                           │    │
 │  │    ├── backtest-service (Walk-forward + Monte Carlo)      │    │
 │  │    ├── notification-service (告警)                        │    │
-│  │    └── agent-service (Python, 缠论引擎)                   │    │
+│  │    └── agent-service (Python, 缠论引擎+LangGraph LLM)     │    │
 │  │                                                            │    │
 │  └────────────────────────────────────────────────────────────┘    │
 │                                                                    │
@@ -77,9 +77,11 @@
 │                                                                    │
 │  ECR (容器镜像仓库)                                               │
 │                                                                    │
+│  Bedrock (Claude Sonnet 4.6, LLM Pipeline)                        │
+│                                                                    │
 └────────────────────────────────────────────────────────────────────┘
 
-外部依赖：Polygon.io（行情数据源）
+外部依赖：Polygon.io（行情数据源）、AWS Bedrock（LLM 推理）
 ```
 
 **Terraform 模块：**
@@ -90,7 +92,7 @@
 | `eks` | EKS 集群、托管节点组、OIDC Provider、IAM 角色、安全组 |
 | `rds` | RDS MySQL 实例、子网组、安全组 |
 | `ecr` | 所有服务的 ECR 镜像仓库 |
-| `timestream` | Timestream InfluxDB 实例、安全组、IRSA IAM 角色 |
+| `timestream` | Timestream InfluxDB 实例、安全组、IRSA IAM 角色（含 Bedrock InvokeModel 权限） |
 | `frontend` | S3 存储桶、CloudFront 分发、WAF (us-east-1)、OAC |
 | `k8s.tf` | K8s 命名空间、Secrets（DB、JWT、agent、polygon）、ConfigMaps |
 
@@ -543,15 +545,64 @@ terraform apply -target=kubernetes_secret.db -target=kubernetes_secret.agent
 kubectl rollout restart deployment -n zenalpha
 ```
 
-### 同步行情数据
+### 同步行情数据（多级别）
+
+区间套分析需要 5 个级别（5m, 30m, 1h, 1d, 1w）的数据。数据存储在 InfluxDB。
+
+**方式一：通过 agent-service API（推荐，无需直连 InfluxDB）**
 
 ```bash
-# 一次性同步
-python3 scripts/sync_polygon.py --symbols AAPL,TSLA,NVDA --days 365
+# 端口转发
+kubectl port-forward -n zenalpha svc/agent-service 18090:8090 &
 
-# 每日同步的 CronJob 已自动部署
-kubectl get cronjob -n zenalpha
+# 单个 instrument + level
+curl -X POST http://localhost:18090/ingest \
+  -H 'Content-Type: application/json' \
+  -d '{"instrument":"AAPL","level":"1w","limit":500}'
+
+# 批量（所有 instruments × 所有 levels）
+# 注意：Polygon free tier 限速 5 req/min，会自动等待
+curl -X POST http://localhost:18090/ingest/bulk \
+  -H 'Content-Type: application/json' \
+  -d '{"levels":["5m","30m","1h","1d","1w"],"limit":500}' \
+  --max-time 1800
 ```
+
+**方式二：独立脚本（需要直连 InfluxDB，在 VPC 内运行）**
+
+```bash
+export POLYGON_API_KEY="xxx"
+export INFLUXDB_URL="https://xxx.timestream-influxdb.us-west-2.on.aws:8086"
+export INFLUXDB_TOKEN="xxx"
+
+# 初始回填（日线 2 年、周线 4 年、小时 6 月、30 分 2 月、5 分 2 周）
+python3 scripts/sync_polygon_influxdb.py --backfill
+
+# 每日增量（拉最近 3 天覆盖周末 gap）
+python3 scripts/sync_polygon_influxdb.py --daily
+
+# 自定义
+python3 scripts/sync_polygon_influxdb.py --from 2025-01-01 --to 2026-03-20 --timeframes 1d,1w
+```
+
+**自动每日同步（CronJob）：**
+
+```bash
+# 已自动部署，UTC 01:00 运行
+kubectl get cronjob -n zenalpha
+# NAME            SCHEDULE    SUSPEND   ACTIVE   LAST SCHEDULE
+# daily-ingest    0 1 * * *   False     0        ...
+
+# 手动触发一次
+kubectl create job --from=cronjob/daily-ingest manual-ingest -n zenalpha
+```
+
+**Polygon Free Tier 注意事项：**
+
+- 限速 5 requests/minute（历史聚合）
+- 19 instruments × 5 levels = 95 requests，约 20 分钟
+- agent-service 内置 13s 间隔 + 指数退避重试
+- CronJob `activeDeadlineSeconds: 1800`（30 分钟超时）
 
 ---
 
@@ -662,8 +713,17 @@ zenalpha/
 ├── scripts/
 │   ├── build-all.sh               # 构建所有镜像 + 推送到 ECR
 │   ├── deploy-k8s.sh              # 部署所有 K8s 资源
-│   └── sync_polygon.py            # 行情数据同步脚本
+│   ├── sync_polygon.py            # MySQL 行情同步（旧）
+│   └── sync_polygon_influxdb.py   # InfluxDB 多级别行情同步
 ├── services/                      # Java 微服务 (Spring Boot)
 ├── chanquant/                     # Python 缠论引擎
-└── frontend/                      # React 18 + TypeScript + Tailwind
+│   ├── agents/
+│   │   ├── bedrock.py             # Bedrock 模型工厂
+│   │   ├── langgraph_pipeline.py  # LangGraph LLM Pipeline
+│   │   └── prompts.py             # Agent Prompt 加载
+│   ├── api/
+│   │   └── gateway.py             # FastAPI 端点
+│   └── core/                      # 确定性算法 (L0-L2)
+└── frontend/                      # React 19 + TypeScript + Tailwind
+    └── src/pages/PipelinePage.tsx  # LLM Pipeline 可视化
 ```

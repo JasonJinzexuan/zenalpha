@@ -22,6 +22,10 @@ agents = [
     "langchain-aws>=0.2",
     "langchain-core>=0.3",
 ]
+streaming = [
+    "massive>=1.0",
+    "influxdb-client>=1.40",
+]
 
 [project.scripts]
 zenalpha = "chanquant.cli.main:app"

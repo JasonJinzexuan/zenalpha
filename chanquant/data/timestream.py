@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Sequence
@@ -13,6 +14,25 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 from chanquant.core.objects import RawKLine, TimeFrame
 
 _BATCH_SIZE = 5000  # InfluxDB write batch size
+
+# Whitelist patterns for Flux query parameters
+_INSTRUMENT_RE = re.compile(r"^[A-Z0-9]{1,10}$")
+_VALID_TIMEFRAMES = frozenset({"1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"})
+
+
+def _validate_instrument(instrument: str) -> str:
+    """Validate instrument is alphanumeric uppercase, 1-10 chars."""
+    if not _INSTRUMENT_RE.match(instrument):
+        raise ValueError(f"Invalid instrument: {instrument!r}")
+    return instrument
+
+
+def _validate_timeframe(tf: TimeFrame) -> str:
+    """Validate timeframe value against known set."""
+    val = tf.value
+    if val not in _VALID_TIMEFRAMES:
+        raise ValueError(f"Invalid timeframe: {val!r}")
+    return val
 
 
 class TimestreamClient:
@@ -39,9 +59,8 @@ class TimestreamClient:
         limit: int = 500,
     ) -> Sequence[RawKLine]:
         """Query OHLCV data from InfluxDB."""
-        # Sanitize inputs to prevent Flux injection
-        safe_instrument = instrument.replace('"', '').replace('\\', '')[:20]
-        safe_tf = timeframe.value.replace('"', '')[:10]
+        safe_instrument = _validate_instrument(instrument)
+        safe_tf = _validate_timeframe(timeframe)
         safe_limit = max(1, min(int(limit), 10000))
         flux = (
             f'from(bucket: "{self._bucket}")'
@@ -86,6 +105,31 @@ class TimestreamClient:
             for record in table.records:
                 instruments.append(record.get_value())
         return tuple(instruments)
+
+    async def get_latest_timestamp(
+        self,
+        instrument: str,
+        timeframe: TimeFrame,
+    ) -> datetime | None:
+        """Get the latest timestamp for an instrument/timeframe combo."""
+        safe_instrument = _validate_instrument(instrument)
+        safe_tf = _validate_timeframe(timeframe)
+        flux = (
+            f'from(bucket: "{self._bucket}")'
+            f' |> range(start: -3650d)'
+            f' |> filter(fn: (r) => r._measurement == "kline")'
+            f' |> filter(fn: (r) => r.instrument == "{safe_instrument}")'
+            f' |> filter(fn: (r) => r.timeframe == "{safe_tf}")'
+            f' |> filter(fn: (r) => r._field == "close")'
+            f' |> last()'
+        )
+        tables = await asyncio.to_thread(
+            self._client.query_api().query, flux, org=self._org
+        )
+        for table in tables:
+            for record in table.records:
+                return record.get_time().replace(tzinfo=None)
+        return None
 
     async def write_klines(
         self,

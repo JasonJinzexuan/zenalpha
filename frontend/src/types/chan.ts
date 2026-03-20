@@ -182,6 +182,36 @@ export interface SignalReview {
   lesson?: string
 }
 
+// ── LLM Pipeline Stage Result ──
+
+export interface PipelineStage {
+  name: string
+  status: 'success' | 'skipped' | 'error'
+  duration_ms: number
+  input_summary: Record<string, unknown>
+  output_summary: Record<string, unknown>
+  error: string | null
+}
+
+export type PipelineStatus = 'idle' | 'pending' | 'running' | 'done' | 'error'
+
+export interface PipelineItem {
+  instrument: string
+  status: PipelineStatus
+  level: string
+  kline_count: number
+  segments: Record<string, unknown>[]
+  centers: Record<string, unknown>[]
+  trend: Record<string, unknown> | null
+  divergence: Record<string, unknown> | null
+  signals: Record<string, unknown>[]
+  nesting: Record<string, unknown> | null
+  errors: string[]
+  stages: PipelineStage[]
+  total_duration_ms: number
+  updated_at: string
+}
+
 // ── Chart overlay layer config ──
 
 export type OverlayLayer =

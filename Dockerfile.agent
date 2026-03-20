@@ -3,7 +3,7 @@ FROM python:3.12-slim AS builder
 WORKDIR /app
 COPY pyproject.toml .
 COPY chanquant/ chanquant/
-RUN touch README.md && pip install --no-cache-dir ".[api,agents]"
+RUN touch README.md && pip install --no-cache-dir ".[api,agents,streaming]"
 
 FROM python:3.12-slim
 

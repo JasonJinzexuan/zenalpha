@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, Map, LineChart, Briefcase,
-  ClipboardCheck, FlaskConical, Settings, LogOut,
+  ClipboardCheck, FlaskConical, Settings, LogOut, Workflow,
 } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 
@@ -11,6 +11,7 @@ const NAV = [
   { to: '/chart/AAPL', label: '缠论图表', icon: LineChart },
   { to: '/positions', label: '持仓管理', icon: Briefcase },
   { to: '/review', label: '信号回顾', icon: ClipboardCheck },
+  { to: '/pipeline', label: 'LLM Pipeline', icon: Workflow },
   { to: '/backtest', label: '回测实验', icon: FlaskConical },
   { to: '/settings', label: '设置', icon: Settings },
 ]

@@ -1,0 +1,47 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: market-sync
+  namespace: zenalpha
+spec:
+  # Every 15 minutes during US market hours (13:30-20:00 UTC = 9:30-16:00 ET)
+  schedule: "*/15 13-20 * * 1-5"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 600
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: sync
+              image: curlimages/curl:8.5.0
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  AGENT=http://agent-service.zenalpha.svc.cluster.local:8090
+
+                  echo "=== Market Sync $(date -u) ==="
+
+                  # 1. Sync daily/weekly only (intraday handled by WS streamer)
+                  echo "--- Syncing daily + weekly ---"
+                  curl -sf -X POST "$AGENT/ingest/sync" \
+                    -H 'Content-Type: application/json' \
+                    -d '{"levels": ["1d", "1w"]}' \
+                    --max-time 120 || echo "WARN: sync failed"
+
+                  echo ""
+
+                  # 2. Quick signal scan on 5m timeframe
+                  echo "--- Signal Scan (5m) ---"
+                  curl -sf -X POST "$AGENT/scan" \
+                    -H 'Content-Type: application/json' \
+                    -d '{"instruments":["AAPL","MSFT","GOOGL","AMZN","NVDA","META","TSLA","JPM","V","UNH","XOM","JNJ","WMT","PG","MA","HD","COST","ABBV","CRM"],"level":"5m","limit":500}' \
+                    --max-time 120 | head -c 1000 || echo "WARN: scan failed"
+
+                  echo ""
+                  echo "=== Done ==="

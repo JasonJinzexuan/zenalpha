@@ -95,6 +95,11 @@ class CenterDetector:
         self._current: Center | None = None
         self._completed: list[Center] = []
 
+    @property
+    def active_center(self) -> Center | None:
+        """Return the in-progress center (not yet broken out)."""
+        return self._current
+
     def feed(self, segment: Segment) -> Center | None:
         """Feed a segment. Returns a completed Center or None."""
         # If we have an active center, try to extend or break

@@ -114,9 +114,15 @@ class AnalysisPipeline:
         if center is not None:
             self._centers.append(center)
 
+        # Include active (in-progress) center for analysis
+        effective_centers = list(self._centers)
+        active = self._center_det.active_center
+        if active is not None and active not in self._centers:
+            effective_centers.append(active)
+
         # L5: Trend classification
         self._trend = self._trend_cls.classify(
-            self._centers, self._segments, self._level
+            effective_centers, self._segments, self._level
         )
 
         # L6: Divergence detection
@@ -127,26 +133,30 @@ class AnalysisPipeline:
             if div is not None:
                 self._divergences.append(div)
 
-        # L7: Signal generation
+        # L7: Signal generation — regenerate from scratch each time
+        # (replaces previous signals to avoid duplicate accumulation)
         if self._trend is not None:
-            new_signals = self._signal_gen.generate(
+            self._signals = self._signal_gen.generate(
                 trend=self._trend,
                 divergence=self._divergences[-1] if self._divergences else None,
-                centers=self._centers,
+                centers=effective_centers,
                 segments=self._segments,
                 strokes=self._strokes,
                 instrument=self._instrument,
             )
-            self._signals.extend(new_signals)
 
     def _snapshot(self) -> PipelineState:
         """Create an immutable snapshot of current state."""
+        all_centers = list(self._centers)
+        active = self._center_det.active_center
+        if active is not None and active not in self._centers:
+            all_centers.append(active)
         return PipelineState(
             standard_klines=tuple(self._klines),
             fractals=tuple(self._fractals),
             strokes=tuple(self._strokes),
             segments=tuple(self._segments),
-            centers=tuple(self._centers),
+            centers=tuple(all_centers),
             trend=self._trend,
             divergences=tuple(self._divergences),
             signals=tuple(self._signals),

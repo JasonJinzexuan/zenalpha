@@ -4,7 +4,7 @@ metadata:
   name: daily-ingest
   namespace: zenalpha
 spec:
-  # Run at 01:00 UTC daily (market close + buffer for US stocks)
+  # Run at 01:00 UTC daily (after US market close + buffer)
   schedule: "0 1 * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
@@ -12,7 +12,7 @@ spec:
   jobTemplate:
     spec:
       backoffLimit: 2
-      activeDeadlineSeconds: 600
+      activeDeadlineSeconds: 1800
       template:
         spec:
           restartPolicy: Never
@@ -24,23 +24,26 @@ spec:
                 - -c
                 - |
                   AGENT=http://agent-service.zenalpha.svc.cluster.local:8090
-                  INSTRUMENTS="AAPL MSFT GOOGL AMZN NVDA META UNH TSLA JPM V"
 
-                  echo "=== Daily Ingest $(date -u) ==="
-                  for sym in $INSTRUMENTS; do
-                    echo "Ingesting $sym..."
-                    curl -sf -X POST "$AGENT/ingest" \
-                      -H 'Content-Type: application/json' \
-                      -d "{\"instrument\":\"$sym\",\"level\":\"1d\",\"limit\":10}" \
-                      --max-time 30 || echo "WARN: $sym ingest failed"
-                    # Polygon free tier: 5 req/min
-                    sleep 13
-                  done
+                  echo "=== Daily Bulk Ingest $(date -u) ==="
+                  echo "Ingesting all timeframes (5m, 30m, 1h, 1d, 1w) for all instruments..."
 
+                  # Bulk ingest — fetches last 500 bars per timeframe per instrument
+                  # Rate limited internally at ~4 req/sec
+                  curl -sf -X POST "$AGENT/ingest/bulk" \
+                    -H 'Content-Type: application/json' \
+                    -d '{
+                      "instruments": ["AAPL","MSFT","GOOGL","AMZN","NVDA","META","TSLA","JPM","V","UNH","XOM","JNJ","WMT","PG","MA","HD","COST","ABBV","CRM"],
+                      "levels": ["5m","30m","1h","1d","1w"],
+                      "limit": 100
+                    }' \
+                    --max-time 1200 || echo "WARN: bulk ingest failed"
+
+                  echo ""
                   echo "=== Signal Scan ==="
                   curl -sf -X POST "$AGENT/scan" \
                     -H 'Content-Type: application/json' \
-                    -d "{\"instruments\":[\"AAPL\",\"MSFT\",\"GOOGL\",\"AMZN\",\"NVDA\",\"META\",\"UNH\",\"TSLA\",\"JPM\",\"V\"],\"level\":\"1d\",\"limit\":500}" \
+                    -d '{"instruments":["AAPL","MSFT","GOOGL","AMZN","NVDA","META","UNH","TSLA","JPM","V"],"level":"1d","limit":500}' \
                     --max-time 60 | head -c 500 || echo "WARN: scan failed"
 
                   echo ""

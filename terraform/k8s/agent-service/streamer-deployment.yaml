@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ws-streamer
+  namespace: zenalpha
+  labels:
+    app: ws-streamer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ws-streamer
+  template:
+    metadata:
+      labels:
+        app: ws-streamer
+    spec:
+      serviceAccountName: agent-service
+      containers:
+        - name: ws-streamer
+          image: 110299474182.dkr.ecr.us-west-2.amazonaws.com/zenalpha/agent-service:latest
+          command: ["python", "-m", "chanquant.data.ws_stream"]
+          env:
+            - name: AWS_DEFAULT_REGION
+              value: us-west-2
+            - name: INFLUXDB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: agent-secrets
+                  key: influxdb-url
+                  optional: true
+            - name: INFLUXDB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: agent-secrets
+                  key: influxdb-token
+                  optional: true
+            - name: POLYGON_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: polygon-secret
+                  key: api-key
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

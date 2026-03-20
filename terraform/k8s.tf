@@ -116,6 +116,10 @@ resource "kubernetes_config_map" "gateway" {
       spring = {
         cloud = {
           gateway = {
+            httpclient = {
+              connect-timeout = 5000
+              response-timeout = "PT180S"
+            }
             routes = [
               { id = "signal-service",       uri = "lb://signal-service",       predicates = ["Path=/api/signals/**"] },
               { id = "backtest-service",     uri = "lb://backtest-service",     predicates = ["Path=/api/backtest/**"] },
@@ -127,6 +131,7 @@ resource "kubernetes_config_map" "gateway" {
                 uri        = "http://agent-service.zenalpha.svc.cluster.local:8090"
                 predicates = ["Path=/api/agents/**"]
                 filters    = ["StripPrefix=2"]
+                metadata   = { response-timeout = 180000, connect-timeout = 5000 }
               },
             ]
             default-filters = ["DedupeResponseHeader=Access-Control-Allow-Credentials Access-Control-Allow-Origin"]

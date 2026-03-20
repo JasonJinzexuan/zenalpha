@@ -70,14 +70,15 @@ class BacktestEngine:
         snapshots: list[PortfolioSnapshot] = [snapshot]
 
         pipelines: dict[str, AnalysisPipeline] = {
-            inst: AnalysisPipeline() for inst in klines
+            inst: AnalysisPipeline(instrument=inst) for inst in klines
         }
+        prev_signal_counts: dict[str, int] = {inst: 0 for inst in klines}
 
         for timestamp, bars in timeline:
             snapshot = replace(snapshot, timestamp=timestamp)
 
-            # 1. Run pipeline analysis & collect signals
-            signals = self._analyse_bars(pipelines, bars)
+            # 1. Run pipeline analysis & collect only NEW signals
+            signals = self._analyse_bars(pipelines, bars, prev_signal_counts)
 
             # 2. Force-close positions in delisted instruments
             snapshot = self._check_delistings(snapshot, timestamp, bars)
@@ -133,13 +134,17 @@ class BacktestEngine:
         self,
         pipelines: dict[str, object],
         bars: dict[str, RawKLine],
+        prev_counts: dict[str, int],
     ) -> list[Signal]:
-        """Feed bars into pipelines and collect any new signals."""
+        """Feed bars into pipelines and collect only NEW signals."""
         signals: list[Signal] = []
         for instrument, bar in bars.items():
             pipeline = pipelines[instrument]
             state = pipeline.feed(bar)  # type: ignore[union-attr]
-            signals.extend(state.signals)
+            prev = prev_counts.get(instrument, 0)
+            if len(state.signals) > prev:
+                signals.extend(state.signals[prev:])
+            prev_counts[instrument] = len(state.signals)
         return signals
 
     def _check_stops(

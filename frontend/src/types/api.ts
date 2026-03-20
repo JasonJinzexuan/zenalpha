@@ -55,6 +55,30 @@ export interface BacktestRequest {
     volume: number
   }[]>
   initial_cash: string
+  level?: string
+}
+
+export interface NestingBacktestRequest {
+  instruments: string[]
+  initial_cash: string
+  levels?: string[]
+  exec_level?: string
+  limit?: number
+  min_nesting_depth?: number
+  require_alignment?: boolean
+}
+
+export interface TradeLogEntry {
+  action: string
+  instrument: string
+  timestamp: string
+  price: string
+  signal: string
+  nesting_depth: number
+  aligned: boolean
+  large: string | null
+  medium: string | null
+  precise: string | null
 }
 
 export interface BacktestResponse {
@@ -66,4 +90,39 @@ export interface BacktestResponse {
   win_rate: string
   profit_factor: string
   total_trades: number
+  trade_log: TradeLogEntry[]
+}
+
+export interface NestingAnalysisRequest {
+  instrument: string
+  use_llm: boolean
+}
+
+export interface ToolCallLog {
+  iteration: number
+  tool: string
+  args: Record<string, unknown>
+  result_summary: Record<string, unknown>
+}
+
+export interface NestingAnalysisResponse {
+  instrument: string
+  nesting_path: string[]
+  target_level: string
+  large_signal: string | null
+  medium_signal: string | null
+  precise_signal: string | null
+  nesting_depth: number
+  direction_aligned: boolean
+  confidence: string
+  confidence_source: string
+  reasoning: string
+  risk_assessment: string
+  tool_calls: ToolCallLog[]
+  iterations: number
+}
+
+export interface SyncIngestResponse {
+  total_written: number
+  details: { instrument: string; level: string; records_written: number; status?: string; last_before?: string; error?: string }[]
 }

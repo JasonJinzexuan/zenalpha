@@ -20,9 +20,9 @@ class ModelTier(str, Enum):
 
 
 _MODEL_IDS: dict[ModelTier, str] = {
-    ModelTier.OPUS: "anthropic.claude-opus-4-6-20250610-v1:0",
-    ModelTier.SONNET: "anthropic.claude-sonnet-4-6-20250514-v1:0",
-    ModelTier.HAIKU: "anthropic.claude-haiku-4-5-20251001-v1:0",
+    ModelTier.OPUS: "global.anthropic.claude-opus-4-6-v1",
+    ModelTier.SONNET: "global.anthropic.claude-sonnet-4-6",
+    ModelTier.HAIKU: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
 }
 
 _DEFAULT_REGION = "us-east-1"
@@ -41,16 +41,16 @@ class ModelConfig:
 # Agent-to-model mapping per PRD §3.3
 AGENT_MODEL_MAP: dict[str, ModelConfig] = {
     "orchestrator": ModelConfig(tier=ModelTier.OPUS),
-    "scanner": ModelConfig(tier=ModelTier.HAIKU),  # deterministic, LLM rarely used
+    "scanner": ModelConfig(tier=ModelTier.SONNET),
     "nester": ModelConfig(tier=ModelTier.SONNET),
     "research": ModelConfig(tier=ModelTier.SONNET),
-    "backtester": ModelConfig(tier=ModelTier.HAIKU, max_tokens=2048),
-    "alerter": ModelConfig(tier=ModelTier.HAIKU, max_tokens=2048),
+    "backtester": ModelConfig(tier=ModelTier.SONNET, max_tokens=2048),
+    "alerter": ModelConfig(tier=ModelTier.SONNET, max_tokens=2048),
     "report": ModelConfig(tier=ModelTier.SONNET),
     "signal-reviewer": ModelConfig(tier=ModelTier.SONNET),
     # Per-layer LLM agents
-    "segment-agent": ModelConfig(tier=ModelTier.HAIKU),
-    "structure-agent": ModelConfig(tier=ModelTier.HAIKU),
+    "segment-agent": ModelConfig(tier=ModelTier.SONNET),
+    "structure-agent": ModelConfig(tier=ModelTier.SONNET),
     "divergence-agent": ModelConfig(tier=ModelTier.SONNET),
     "signal-agent": ModelConfig(tier=ModelTier.SONNET),
     "nesting-agent": ModelConfig(tier=ModelTier.SONNET),

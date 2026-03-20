@@ -224,6 +224,10 @@ def _generate_b3_s3(
 
     center = centers[-1]
 
+    # Check strokes for center breakout + pullback pattern
+    # Only keep the LAST valid B3/S3 (most recent)
+    last_b3: Signal | None = None
+    last_s3: Signal | None = None
     for i in range(len(strokes) - 1):
         curr = strokes[i]
         nxt = strokes[i + 1]
@@ -236,7 +240,7 @@ def _generate_b3_s3(
             and nxt.low >= center.zg
             and nxt.end_time
         ):
-            signals.append(Signal(
+            last_b3 = Signal(
                 signal_type=SignalType.B3,
                 level=level.level,
                 instrument=instrument,
@@ -246,8 +250,7 @@ def _generate_b3_s3(
                 strength=Decimal("0.5"),
                 source_lesson="L7.3",
                 reasoning="突破中枢上沿后回踩不破，产生第三类买点",
-            ))
-            break  # First pullback only
+            )
 
         # S3: break below ZD, then pullback high stays below ZD
         if (
@@ -257,7 +260,7 @@ def _generate_b3_s3(
             and nxt.high <= center.zd
             and nxt.end_time
         ):
-            signals.append(Signal(
+            last_s3 = Signal(
                 signal_type=SignalType.S3,
                 level=level.level,
                 instrument=instrument,
@@ -267,9 +270,12 @@ def _generate_b3_s3(
                 strength=Decimal("0.5"),
                 source_lesson="L7.3",
                 reasoning="跌破中枢下沿后反弹不回，产生第三类卖点",
-            ))
-            break  # First pullback only
+            )
 
+    if last_b3 is not None:
+        signals.append(last_b3)
+    if last_s3 is not None:
+        signals.append(last_s3)
     return signals
 
 

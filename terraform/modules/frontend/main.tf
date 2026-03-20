@@ -67,29 +67,23 @@ resource "aws_cloudfront_distribution" "frontend" {
     origin_id   = "api-gateway"
 
     custom_origin_config {
-      http_port              = 80
-      https_port             = 443
-      origin_protocol_policy = "http-only"
-      origin_ssl_protocols   = ["TLSv1.2"]
+      http_port                = 80
+      https_port               = 443
+      origin_protocol_policy   = "http-only"
+      origin_ssl_protocols     = ["TLSv1.2"]
+      origin_read_timeout      = 60
+      origin_keepalive_timeout = 60
     }
   }
 
   default_cache_behavior {
-    allowed_methods  = ["GET", "HEAD", "OPTIONS"]
+    allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
     cached_methods   = ["GET", "HEAD"]
     target_origin_id = "s3-frontend"
 
-    forwarded_values {
-      query_string = false
-      cookies {
-        forward = "none"
-      }
-    }
+    cache_policy_id = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # Managed-CachingDisabled
 
     viewer_protocol_policy = "redirect-to-https"
-    min_ttl                = 0
-    default_ttl            = 86400
-    max_ttl                = 86400
     compress               = true
 
     function_association {
@@ -105,18 +99,10 @@ resource "aws_cloudfront_distribution" "frontend" {
     cached_methods   = ["GET", "HEAD"]
     target_origin_id = "api-gateway"
 
-    forwarded_values {
-      query_string = true
-      headers      = ["Authorization", "Content-Type", "Accept", "Origin"]
-      cookies {
-        forward = "none"
-      }
-    }
+    cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # Managed-CachingDisabled
+    origin_request_policy_id = "216adef6-5c7f-47e4-b989-5492eafa07d3" # Managed-AllViewer
 
     viewer_protocol_policy = "redirect-to-https"
-    min_ttl                = 0
-    default_ttl            = 0
-    max_ttl                = 0
     compress               = true
   }
 
@@ -127,17 +113,9 @@ resource "aws_cloudfront_distribution" "frontend" {
     cached_methods   = ["GET", "HEAD"]
     target_origin_id = "s3-frontend"
 
-    forwarded_values {
-      query_string = false
-      cookies {
-        forward = "none"
-      }
-    }
+    cache_policy_id = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # Managed-CachingDisabled
 
     viewer_protocol_policy = "redirect-to-https"
-    min_ttl                = 0
-    default_ttl            = 0
-    max_ttl                = 0
     compress               = true
   }
 

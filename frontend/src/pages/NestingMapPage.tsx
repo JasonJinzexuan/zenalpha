@@ -6,7 +6,9 @@ import { cn } from '@/lib/cn'
 import { WALK_STATE_LABELS, signalTag, STRUCT } from '@/lib/chan-labels'
 import type { AnalysisResult, TimeFrame, WalkState } from '@/types/chan'
 import { getSignalType, isBuySignal } from '@/types/chan'
-import { Search, Layers, ChevronDown } from 'lucide-react'
+import { nestingAnalyze } from '@/api/agent'
+import type { NestingAnalysisResponse, ToolCallLog } from '@/types/api'
+import { Search, Layers, ChevronDown, Brain, Loader2, Zap } from 'lucide-react'
 
 interface NestingLevel {
   timeframe: TimeFrame
@@ -38,12 +40,15 @@ export default function NestingMapPage() {
   const [input, setInput] = useState(selectedSymbol)
   const [analyses, setAnalyses] = useState<Record<string, AnalysisResult>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({ '1d': true })
+  const [llmResult, setLlmResult] = useState<NestingAnalysisResponse | null>(null)
+  const [llmLoading, setLlmLoading] = useState(false)
 
   useEffect(() => {
     if (symbol && symbol !== selectedSymbol) {
       setSelectedSymbol(symbol)
       setInput(symbol)
       setAnalyses({})
+      setLlmResult(null)
     }
   }, [symbol])
 
@@ -52,7 +57,20 @@ export default function NestingMapPage() {
     if (s) {
       setSelectedSymbol(s)
       setAnalyses({})
+      setLlmResult(null)
       nav(`/nesting-map/${s}`, { replace: true })
+    }
+  }
+
+  async function runLLMNesting() {
+    setLlmLoading(true)
+    try {
+      const result = await nestingAnalyze({ instrument: selectedSymbol, use_llm: true })
+      setLlmResult(result)
+    } catch (err) {
+      console.error('LLM nesting failed:', err)
+    } finally {
+      setLlmLoading(false)
     }
   }
 
@@ -73,16 +91,22 @@ export default function NestingMapPage() {
           <h1 className="text-lg font-semibold tracking-[2px]">{selectedSymbol}</h1>
           <span className="text-text-muted text-[10px] tracking-wider">区间套分析</span>
         </div>
-        <div className="flex items-center gap-1 bg-bg-card border border-bg-border rounded overflow-hidden">
-          <input
-            className="bg-transparent px-3 py-1.5 text-xs text-text-primary outline-none w-24 font-mono"
-            value={input}
-            onChange={e => setInput(e.target.value.toUpperCase())}
-            onKeyDown={e => e.key === 'Enter' && goToSymbol()}
-            placeholder="代码"
-          />
-          <button onClick={goToSymbol} className="px-2 py-1.5 text-text-muted hover:text-accent-cyan transition-colors">
-            <Search size={13} />
+        <div className="flex items-center">
+          <div className="flex items-center gap-1 bg-bg-card border border-bg-border rounded overflow-hidden">
+            <input
+              className="bg-transparent px-3 py-1.5 text-xs text-text-primary outline-none w-24 font-mono"
+              value={input}
+              onChange={e => setInput(e.target.value.toUpperCase())}
+              onKeyDown={e => e.key === 'Enter' && goToSymbol()}
+              placeholder="代码"
+            />
+            <button onClick={goToSymbol} className="px-2 py-1.5 text-text-muted hover:text-accent-cyan transition-colors">
+              <Search size={13} />
+            </button>
+          </div>
+          <button onClick={runLLMNesting} disabled={llmLoading} className="btn-primary flex items-center gap-1.5 ml-2">
+            {llmLoading ? <Loader2 size={12} className="animate-spin" /> : <Brain size={12} />}
+            AI分析
           </button>
         </div>
       </div>
@@ -199,6 +223,80 @@ export default function NestingMapPage() {
           )
         })}
       </div>
+
+      {/* LLM Nesting Analysis */}
+      {llmResult && (
+        <div className="card border-accent-purple/30">
+          <div className="card-header text-accent-purple">
+            <span className="flex items-center gap-2"><Brain size={14} /> AI 区间套分析</span>
+            <span className="text-[9px] text-text-dim">{llmResult.confidence_source} · {llmResult.iterations} iterations · {llmResult.tool_calls.length} tool calls</span>
+          </div>
+          <div className="p-4 space-y-3">
+            {/* Path */}
+            {llmResult.nesting_path.length > 0 && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[10px] text-text-muted tracking-wider">路径:</span>
+                {llmResult.nesting_path.map((p, i) => (
+                  <span key={i} className="flex items-center gap-1">
+                    {i > 0 && <span className="text-text-muted">→</span>}
+                    <span className="tag">{p}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Metrics */}
+            <div className="grid grid-cols-4 gap-3">
+              <div className="bg-bg-primary rounded px-3 py-2 border border-bg-border/50">
+                <div className="text-sm font-bold text-accent-cyan">{llmResult.nesting_depth}</div>
+                <div className="text-[9px] text-text-muted">嵌套深度</div>
+              </div>
+              <div className="bg-bg-primary rounded px-3 py-2 border border-bg-border/50">
+                <div className={cn('text-sm font-bold', llmResult.direction_aligned ? 'text-accent-green' : 'text-accent-red')}>
+                  {llmResult.direction_aligned ? '✓ 一致' : '✗ 不一致'}
+                </div>
+                <div className="text-[9px] text-text-muted">方向对齐</div>
+              </div>
+              <div className="bg-bg-primary rounded px-3 py-2 border border-bg-border/50">
+                <div className="text-sm font-bold text-accent-yellow">{(+llmResult.confidence * 100).toFixed(0)}%</div>
+                <div className="text-[9px] text-text-muted">置信度</div>
+              </div>
+              <div className="bg-bg-primary rounded px-3 py-2 border border-bg-border/50">
+                <div className="text-sm font-bold text-text-primary">{llmResult.target_level}</div>
+                <div className="text-[9px] text-text-muted">目标级别</div>
+              </div>
+            </div>
+
+            {/* Signals */}
+            <div className="flex items-center gap-3 text-[10px]">
+              {llmResult.large_signal && <span className="tag tag-cyan">大级别: {llmResult.large_signal}</span>}
+              {llmResult.medium_signal && <span className="tag tag-yellow">中级别: {llmResult.medium_signal}</span>}
+              {llmResult.precise_signal && <span className="tag tag-green">精确: {llmResult.precise_signal}</span>}
+            </div>
+
+            {/* Reasoning */}
+            {llmResult.reasoning && (
+              <div className="bg-bg-primary rounded p-3 border border-bg-border/50">
+                <div className="text-[9px] text-text-muted tracking-wider mb-1">AI 推理</div>
+                <div className="text-[11px] text-text-primary leading-relaxed whitespace-pre-wrap">{llmResult.reasoning}</div>
+              </div>
+            )}
+
+            {/* Risk */}
+            {llmResult.risk_assessment && (
+              <div className="bg-accent-red/5 rounded p-3 border border-accent-red/20">
+                <div className="text-[9px] text-accent-red tracking-wider mb-1">风险评估</div>
+                <div className="text-[11px] text-text-primary leading-relaxed">{llmResult.risk_assessment}</div>
+              </div>
+            )}
+
+            {/* Tool calls */}
+            {llmResult.tool_calls.length > 0 && (
+              <ToolCallTimeline calls={llmResult.tool_calls} />
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Nesting conclusion */}
       <div className="card border-accent-cyan/20">
@@ -323,6 +421,35 @@ function NestingConclusion({ analyses, symbol }: { analyses: Record<string, Anal
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+function ToolCallTimeline({ calls }: { calls: ToolCallLog[] }) {
+  const [expanded, setExpanded] = useState(false)
+  return (
+    <div>
+      <button onClick={() => setExpanded(!expanded)} className="flex items-center gap-1.5 text-[9px] text-text-dim hover:text-accent-cyan transition-colors">
+        <Zap size={10} />
+        {expanded ? '收起' : '展开'} Tool Calls ({calls.length})
+      </button>
+      {expanded && (
+        <div className="mt-2 space-y-1">
+          {calls.map((c, i) => (
+            <div key={i} className="flex items-center gap-2 text-[9px] py-1 px-2 bg-bg-primary/50 rounded border border-bg-border/30">
+              <span className="text-text-muted w-4">#{c.iteration}</span>
+              <span className="text-accent-cyan font-mono">{c.tool}</span>
+              <span className="text-text-dim truncate flex-1">{JSON.stringify(c.args)}</span>
+              {c.result_summary && (
+                <span className="text-accent-green shrink-0">
+                  {(c.result_summary as any).signal_count != null ? `${(c.result_summary as any).signal_count} signals` : ''}
+                  {(c.result_summary as any).trend ? ` · ${(c.result_summary as any).trend}` : ''}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { scanInstruments } from '@/api/agent'
+import { scanInstruments, healthCheck } from '@/api/agent'
 import { useWatchlistStore } from '@/stores/watchlist'
 import { cn } from '@/lib/cn'
 import { WALK_STATE_LABELS, signalTag, STRUCT } from '@/lib/chan-labels'
@@ -75,6 +75,7 @@ export default function OverviewPage() {
   const [rows, setRows] = useState<InstrumentRow[]>([])
   const [loading, setLoading] = useState(false)
   const [lastScan, setLastScan] = useState('')
+  const [tsStatus, setTsStatus] = useState('unknown')
 
   const runScan = useCallback(async () => {
     setLoading(true)
@@ -99,6 +100,10 @@ export default function OverviewPage() {
 
   useEffect(() => { runScan() }, [runScan])
 
+  useEffect(() => {
+    healthCheck().then(r => setTsStatus(r.timestream)).catch(() => {})
+  }, [])
+
   const urgentRows = rows.filter(r => r.status === 'urgent')
   const watchRows = rows.filter(r => r.status === 'watch')
   const totalSignals = rows.reduce((sum, r) => sum + r.item.signals.length, 0)
@@ -116,6 +121,24 @@ export default function OverviewPage() {
         <button onClick={runScan} disabled={loading} className="btn-primary">
           <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
           {loading ? '扫描中...' : '刷新'}
+        </button>
+      </div>
+
+      {/* Live status bar */}
+      <div className="flex items-center gap-4 px-4 py-2 bg-bg-card rounded border border-bg-border text-[10px]">
+        {tsStatus === 'connected' ? (
+          <span className="flex items-center gap-1.5 text-accent-green">
+            <span className="w-1.5 h-1.5 rounded-full bg-accent-green animate-pulse" />
+            实时数据流
+          </span>
+        ) : (
+          <span className="text-accent-red">数据源未连接</span>
+        )}
+        <span className="text-text-muted">|</span>
+        <span className="text-text-dim">Timestream: {tsStatus}</span>
+        {lastScan && <span className="text-text-dim ml-auto">上次扫描 {lastScan}</span>}
+        <button onClick={runScan} disabled={loading} className="ml-2 text-accent-cyan hover:underline disabled:opacity-50">
+          同步数据
         </button>
       </div>
 

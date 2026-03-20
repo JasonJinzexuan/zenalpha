@@ -7,7 +7,9 @@
 - **信号识别器**：自动执行 L0-L9 分析，输出一买/二买/三买/一卖/二卖/三卖买卖信号
 - **标的过滤器**：多标的扫描 → 评分排序 → Top N 输出
 - **区间套分析**：周线→日线→30分→5分，四级别递进定位操作点
-- **回测引擎**：事件驱动回测 + Walk-forward + Monte Carlo 验证
+- **LLM Agent 编排**：Claude tool_use + LangGraph，Agent 自主获取多级别数据并合成分析
+- **实时数据流**：Polygon/Massive WebSocket 延迟行情 → InfluxDB → 15分钟缠论分析周期
+- **回测引擎**：事件驱动回测 + 多级别区间套回测
 
 **不是**投资助手、不是交易系统、不接交易所 API。
 
@@ -33,18 +35,25 @@
        │  (Python FastAPI│ │svc   │ │test  │ │service │ │ service   │
        │   缠论引擎)     │ │(Java)│ │svc   │ │(Java)  │ │ (JWT)     │
        │   port 8090     │ │8081  │ │8082  │ │ 8083   │ │  8084     │
-       └───────┬─────────┘ └──┬───┘ └──┬───┘ └───┬────┘ └────┬─────┘
-               │              │        │         │            │
-      ┌────────▼──────┐  ┌───▼────────▼─────────▼────────────▼─────┐
-      │  InfluxDB v2   │  │              RDS MySQL 8.0               │
-      │  (Timestream)  │  │  (instrument, signal, backtest, user)   │
-      │  K线 + OHLCV   │  └────────────────────────────────────────┘
-      └───────┬────────┘
-              │
-      ┌───────▼────────┐
-      │  Polygon.io    │
-      │  (行情数据源)   │
-      └────────────────┘
+       └──┬──────┬───────┘ └──┬───┘ └──┬───┘ └───┬────┘ └────┬─────┘
+          │      │            │        │         │            │
+   ┌──────▼──┐ ┌─▼────────┐  │        │         │            │
+   │Bedrock  │ │ws-streamer│  └────────▼─────────▼────────────▼─────┐
+   │ Claude  │ │ (Massive  │  │              RDS MySQL 8.0          │
+   │ Sonnet  │ │  WebSocket│  └────────────────────────────────────┘
+   └─────────┘ │  Delayed) │
+               └──┬────────┘
+                  │
+          ┌───────▼────────┐
+          │  InfluxDB v2   │
+          │  (Timestream)  │
+          │  K线 + OHLCV   │
+          └───────┬────────┘
+                  │
+          ┌───────▼────────┐
+          │  Polygon.io    │
+          │  (行情数据源)   │
+          └────────────────┘
 
      Eureka (服务注册)      Apollo (配置中心)      notification-service (8085)
 ```
@@ -58,55 +67,21 @@
 | API 网关 | Spring Cloud Gateway + JWT |
 | 微服务 | Spring Boot 3.2 + Spring Cloud 2023 (Java 17) |
 | 缠论引擎 | Python 3.12 + FastAPI + `chanquant` (核心算法库) |
+| LLM Agent | Claude Sonnet (AWS Bedrock) + LangGraph + tool_use |
 | 时序数据 | Amazon Timestream for InfluxDB (InfluxDB v2, Flux 查询) |
 | 关系数据 | RDS MySQL 8.0 (用户、持仓、信号记录) |
-| 行情数据 | Polygon.io REST API → InfluxDB |
-| 注册中心 | Eureka Server |
-| 配置中心 | Apollo Config |
+| 行情数据 | Polygon/Massive REST + WebSocket (延迟15分钟) |
 | 容器编排 | EKS (Kubernetes 1.29) |
 | 前端部署 | CloudFront + S3 (OAC) + WAF |
 | IaC | Terraform 1.7+ |
-| 定时任务 | K8s CronJob (每日 UTC 01:00 自动 ingest + scan) |
 
 ---
 
-## 前端页面
+## 两套分析管道
 
-| 页面 | 路由 | 功能 |
-|------|------|------|
-| **态势总览** | `/overview` | 多标的扫描状态矩阵，走势状态（上涨/下跌/盘整/背驰）一览，紧急/关注信号分组 |
-| **区间套地图** | `/nesting-map/:symbol` | 4 层级递进分析：周线(方向)→日线(位置)→30分(精确)→5分(操作)，综合结论 |
-| **缠论图表** | `/chart/:symbol` | 交互式 K 线图 + 6 层叠加（分型/笔/线段/中枢/买卖点/背驰）+ MACD 子图 |
-| **持仓管理** | `/positions` | 多级别走势状态标签，操作提示（定理8.5/10.2/10.3），成本归零进度 |
-| **信号回顾** | `/review` | 正确/错误/待定分组，点击查看明细（结构快照/MAE/MFE/失败原因/经验教训） |
-| **回测实验** | `/backtest` | 配置表单 + 指标卡片 (Sharpe/Sortino/MaxDD) + 权益曲线 |
-| **设置** | `/settings` | 自选列表管理，手动/自动 ingest 数据同步 |
+系统提供**确定性管道**和**LLM Agent 管道**两套并行的分析路径：
 
-### 图表叠加层
-
-| 叠加层 | 说明 |
-|--------|------|
-| 分型 | 顶分型（橙色 ▽）/ 底分型（青色 △） |
-| 笔 | 蓝色连线，连接相邻顶底分型 |
-| 线段 | 紫色粗线，至少 3 笔构成 |
-| 中枢 | 黄色虚线标注 ZG/ZD 区间 |
-| 买卖点 | 绿色（买入）/ 红色（卖出）标记 |
-| 背驰 | a 段 vs c 段 MACD 面积对比区域 |
-
-### 缠论术语映射
-
-| 代号 | 中文 | 英文 |
-|------|------|------|
-| B1 | 一买 | First Buy Point |
-| B2 | 二买 | Second Buy Point |
-| B3 | 三买 | Third Buy Point |
-| S1 | 一卖 | First Sell Point |
-| S2 | 二卖 | Second Sell Point |
-| S3 | 三卖 | Third Sell Point |
-
----
-
-## 10 层算法管道
+### 确定性管道（L0-L8）
 
 ```
 Raw K-Line
@@ -122,7 +97,7 @@ Raw K-Line
 │  L4  中枢识别        CenterDetector        ZG/ZD/GG/DD + 延伸    │
 │  L5  趋势分类        TrendClassifier       盘整/上升/下降         │
 │  L6  背驰判断        DivergenceDetector    a段 vs c段 MACD面积   │
-│  L7  买卖点生成      SignalGenerator       一买/一卖 + 二/三买卖  │
+│  L7  买卖点生成      SignalGenerator        一买/一卖 + 二/三买卖  │
 │  L8  区间套          IntervalNester        多级别递进定位         │
 ├─────────────────────────────────────────────────────────────────┤
 │  L9  评分排序        SignalScorer          5维加权 + 过滤         │
@@ -133,9 +108,22 @@ Raw K-Line
 Signal / ScanResult
 ```
 
-每层规则均对应缠论 108 课原文出处，详见 [docs/algorithm.md](docs/algorithm.md)。
+**这条管道是纯确定性的**：给定相同 K 线数据，永远产出相同结果。没有 LLM 参与。前端 `/overview`（态势总览）和 `/chart`（缠论图表）使用此管道。
 
-### 关键修正（vs 常见开源实现）
+#### 核心算法逻辑
+
+| 层 | 输入 | 输出 | 关键逻辑 |
+|----|------|------|---------|
+| L0 | Raw K-Line | StandardKLine | 相邻K线包含关系处理（方向决定取高/取低） |
+| L1 | StandardKLine | Fractal | 连续3根K线形成顶分型（中间最高）或底分型（中间最低） |
+| L2 | Fractal | Stroke | 顶底分型之间≥5根K线，方向交替 |
+| L3 | Stroke | Segment | **特征序列**分析：取反向笔构成序列，做包含处理后找分型。第一种终结（无缺口+分型）和第二种终结（缺口+反向分型确认） |
+| L4 | Segment | Center | 3根线段重叠区间 [ZD, ZG]，后续线段仍在范围内则延伸 |
+| L5 | Center[] | TrendType | 1个中枢=盘整，2+个非重叠递升中枢=上涨趋势，递降=下跌趋势。构建 a+A+b+B+c 结构 |
+| L6 | TrendType + MACD | Divergence | 比较 a段 vs c段 MACD面积/DIF极值/量能衰竭，≥2/3确认=背驰 |
+| L7 | Trend + Divergence + Centers | Signal[] | B1/S1=趋势背驰反转，B2/S2=不创新低/盘整背驰/小转大，B3/S3=突破中枢回踩不破 |
+
+#### 关键修正（vs 常见开源实现）
 
 | # | 层级 | 修正内容 | 原文依据 |
 |---|------|---------|---------|
@@ -145,38 +133,130 @@ Signal / ScanResult
 | 4 | L7 | 二买补充盘整背驰 + 小转大两个触发条件 | 第 053 课 |
 | 5 | L8 | 替换加权评分为区间套递进定位 | 第 030 课 |
 
+### LLM Agent 管道（LangGraph + Tool Use）
+
+```
+前端「一键分析」/「AI分析」
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Phase 1: 确定性 L0-L2 (与上面相同)                              │
+│  KLineProcessor → FractalDetector → StrokeBuilder + MACD        │
+├─────────────────────────────────────────────────────────────────┤
+│  Phase 2: LLM Agent 链 (LangGraph StateGraph)                   │
+│                                                                  │
+│  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐     │
+│  │ Segment  │──►│Structure │──►│Divergence│──►│ Signal   │     │
+│  │  Agent   │   │  Agent   │   │  Agent   │   │  Agent   │     │
+│  │(Sonnet)  │   │(Sonnet)  │   │(Sonnet)  │   │(Sonnet)  │     │
+│  └──────────┘   └──────────┘   └──────────┘   └────┬─────┘     │
+│       L3             L4-L5          L6              L7          │
+│                                                     │            │
+│                                              ┌──────▼─────┐     │
+│                                              │  Nesting   │     │
+│                                              │   Agent    │     │
+│                                              │  (Sonnet)  │     │
+│                                              │ + tool_use │     │
+│                                              └────────────┘     │
+│                                                    L8           │
+└─────────────────────────────────────────────────────────────────┘
+    │
+    ▼
+LLM-enriched Analysis Result (stages + tool calls + reasoning)
+```
+
+#### Agent 的作用
+
+**确定性管道已经能独立工作**。LLM Agent 管道的价值在于：
+
+1. **L3 Segment Agent**：线段划分是缠论中最复杂的部分（特征序列 + 包含处理 + 两种终结），确定性算法处理边缘 case 可能有偏差，LLM 可以在上下文中综合判断
+2. **L4-L5 Structure Agent**：中枢和趋势的判断需要整体结构视角（a+A+b+B+c），LLM 能用自然语言解释为什么归类为某种走势
+3. **L6 Divergence Agent**：背驰判断有"三重确认"（面积/DIF/量能），LLM 能综合考虑市场状态而非机械比较数值
+4. **L7 Signal Agent**：买卖点生成依赖前面所有层的判断，LLM 能做出更细腻的强度评估
+5. **L8 Nesting Agent**（核心）：这是 Agent 最有价值的环节 —— 它使用 **tool_use** 自主调用工具：
+   - `run_pipeline` — 对任意 instrument+timeframe 运行确定性 L0-L7
+   - `compare_divergence` — 比较两个级别的背驰状态
+   - `get_market_summary` — 获取全时间周期概览
+
+   Agent 自主决定查看哪些级别、以什么顺序分析，然后合成区间套结论。
+
+#### 条件路由
+
+LangGraph pipeline 有条件边：
+- 无线段 → 跳过 structure/divergence，直接到 signal（可能仍有 B3）
+- 盘整（1个中枢）→ 跳过 divergence
+- 无信号 → 跳过 nesting
+
+#### Fallback 机制
+
+NesterAgent 有三层 fallback：
+1. **LLM tool_use** → 自主多级别分析（最佳）
+2. **确定性多级别** → 依次跑 1w/1d/30m/5m pipeline 并合成（无 LLM）
+3. **确定性单级别** → 仅从已有扫描结果推断（最简）
+
+如果 Bedrock 不可用或 LLM 调用失败，自动降级到确定性路径。
+
 ---
 
-## 数据流
+## 数据管道
 
-### K 线数据
-
-```
-Polygon.io  ──(REST API)──►  agent-service /ingest  ──►  InfluxDB (bucket: marketdata)
-                                                              │
-                              agent-service /klines  ◄────────┘
-                                      │
-                              agent-service /scan    ←── InfluxDB + Pipeline
-                                      │
-                                  前端展示
-```
-
-- **数据源**：Polygon.io REST API（免费版 5 req/min）
-- **存储**：Amazon Timestream for InfluxDB，measurement `kline`，tag: `instrument` + `timeframe`
-- **自动更新**：K8s CronJob `daily-ingest`，每天 UTC 01:00 自动拉取最新 K 线并执行信号扫描
-- **手动更新**：前端设置页 → 单标的/全部 ingest
-
-### 分析流程
+### 三种数据获取方式
 
 ```
-前端 getKLines() ──► agent-service /klines/{instrument}  ←── InfluxDB
-        │
-        ▼
-前端 analyzeInstrument() ──► agent-service /analyze  ──► 10层管道
-        │
-        ▼
-    ChanChart 渲染: K线 + 笔 + 线段 + 中枢 + 买卖点 + MACD
+                  ┌─────────────┐
+                  │  Polygon.io │
+                  └──┬──────┬───┘
+                     │      │
+              REST API    WebSocket (Massive SDK)
+              (按需)      (实时, 延迟15min)
+                     │      │
+                     ▼      ▼
+    ┌───────────────────────────────────────────────┐
+    │              InfluxDB (Timestream)              │
+    │  bucket: marketdata                             │
+    │  measurement: kline                             │
+    │  tags: instrument, timeframe                    │
+    │  fields: open, high, low, close, volume         │
+    └───────────────────────────────────────────────┘
 ```
+
+| 方式 | 触发 | 数据 | 说明 |
+|------|------|------|------|
+| **WebSocket Streamer** | 持续运行 | 1m → 5m/30m/1h 实时聚合 | `ws-streamer` Deployment，使用 Massive SDK `Feed.Delayed`，每15分钟自动跑缠论分析 |
+| **CronJob Sync** | `*/15 13-20 * * 1-5` | 1d + 1w 增量同步 | 美股盘中每15分钟，仅同步日线和周线（分钟级由 WS 处理） |
+| **手动/API Ingest** | 前端设置页 / API 调用 | 任意级别 | `POST /ingest/sync` 增量、`POST /ingest/bulk` 全量 |
+
+### WS Streamer 细节
+
+`chanquant/data/ws_stream.py`:
+
+1. 订阅 19 只标的的 `AM.*`（分钟聚合）
+2. 每根1分钟 bar → 写入 InfluxDB + 聚合到 5m/30m/1h
+3. 聚合逻辑：`BarAggregator` 在 `(hour*60 + minute + 1) % period == 0` 时 flush
+4. 每15分钟 → 后台线程跑 `execute_tool("run_pipeline")` 对19只标的做缠论分析
+5. 断线重连：指数退避（1s → 5min），最多20次
+
+### 不会重复写入
+
+- InfluxDB 写入是幂等的（相同 measurement+tags+timestamp 覆盖）
+- WS 处理盘中分钟级数据 (1m/5m/30m/1h)
+- CronJob 只处理 1d + 1w
+- 无重叠
+
+---
+
+## 前端页面
+
+| 页面 | 路由 | 数据管道 | 功能 |
+|------|------|---------|------|
+| **态势总览** | `/overview` | 确定性 | 多标的扫描状态矩阵，走势状态一览，实时数据流状态指示器 |
+| **区间套地图** | `/nesting-map/:symbol` | 确定性 + LLM | 4层级递进分析 + **AI分析按钮**（调用 NesterAgent tool_use） |
+| **缠论图表** | `/chart/:symbol` | 确定性 | 交互式K线图 + 6层叠加 + MACD子图 |
+| **LLM Pipeline** | `/pipeline` | LLM Agent | 一键触发 LangGraph 多Agent分析，Stage时间线，Tool Call展示 |
+| **持仓管理** | `/positions` | — | 多级别走势状态标签，操作提示 |
+| **信号回顾** | `/review` | — | 正确/错误/待定分组 |
+| **回测实验** | `/backtest` | 确定性 | Sharpe/Sortino/MaxDD + 权益曲线 |
+| **设置** | `/settings` | — | 自选列表管理，手动数据同步 |
 
 ---
 
@@ -188,44 +268,44 @@ Polygon.io  ──(REST API)──►  agent-service /ingest  ──►  InfluxD
 |--------|------|------|
 | `GET` | `/health` | 健康检查 + InfluxDB 连接状态 |
 | `GET` | `/klines/{instrument}?level=1d&limit=500` | 从 InfluxDB 获取 K 线 |
-| `POST` | `/analyze` | 传入 K 线 → 运行 L0-L8 管道 → 返回完整结构分析 |
-| `POST` | `/scan` | 传入标的列表 → 从 InfluxDB 获取数据 → 批量分析 |
-| `POST` | `/ingest` | 从 Polygon.io 拉 K 线 → 写入 InfluxDB |
+| `POST` | `/analyze` | 传入 K 线 → 确定性 L0-L8 管道 |
+| `POST` | `/scan` | 多标的批量扫描（InfluxDB → Pipeline） |
+| `POST` | `/nesting/analyze` | **NesterAgent tool_use 区间套分析** |
+| `POST` | `/pipeline/trigger` | **触发 LangGraph LLM Pipeline**（异步） |
+| `GET` | `/pipeline/status` | 查询 Pipeline 进度和结果 |
+| `POST` | `/ingest` | 单标的 Polygon → InfluxDB |
+| `POST` | `/ingest/bulk` | 全量批量拉取 |
+| `POST` | `/ingest/sync` | **增量同步**（基于 last timestamp） |
 | `POST` | `/backtest` | 事件驱动回测 |
+| `POST` | `/backtest/nesting` | 多级别区间套回测 |
 
-#### /analyze 返回结构
+### 安全
 
-```json
-{
-  "instrument": "AAPL",
-  "level": "1d",
-  "kline_count": 151,
-  "fractal_count": 68,
-  "stroke_count": 10,
-  "segment_count": 3,
-  "center_count": 2,
-  "divergence_count": 1,
-  "signals": [{ "signal_type": "B1", "price": "252.30", "strength": "0.85", ... }],
-  "fractals": [{ "type": "top", "timestamp": "...", "price": "...", "kline_index": 3 }],
-  "strokes": [{ "direction": "up", "start_index": 0, "end_index": 5, "macd_area": "..." }],
-  "segments": [{ "direction": "up", "stroke_count": 3, "termination_type": "first" }],
-  "centers": [{ "zg": "260.50", "zd": "248.30", "gg": "265.00", "dd": "245.00" }],
-  "divergences": [{ "type": "trend", "a_macd_area": "45.2", "c_macd_area": "38.1" }],
-  "macd_values": [{ "dif": "1.23", "dea": "0.98", "histogram": "0.25" }],
-  "trend": { "classification": "up_trend", "center_count": 2, "walk_state": "top_divergence" }
-}
-```
+- API 端点有**速率限制**（60/min 一般，10/min 重操作）
+- Instrument 参数白名单校验（`^[A-Z0-9]{1,10}$`）
+- Timeframe 枚举校验
+- InfluxDB Flux 查询参数防注入
+- LLM 响应 JSON 通过 Pydantic schema 校验
+- WebSocket 断线指数退避 + 最大重试次数
 
-### Gateway 路由 (Spring Cloud Gateway, port 8080)
+---
 
-| Path Pattern | 目标服务 | 说明 |
-|-------------|---------|------|
-| `/api/agents/**` | agent-service:8090 | 缠论分析引擎（StripPrefix=2） |
-| `/api/signals/**` | signal-service:8081 | Java 信号服务 |
-| `/api/backtest/**` | backtest-service:8082 | 回测服务 |
-| `/api/data/**` | data-service:8083 | 标的管理（instrument CRUD） |
-| `/api/users/**` | user-service:8084 | 认证 + 自选股 |
-| `/api/notifications/**` | notification-service:8085 | 通知推送 |
+## Agent 工具定义
+
+NesterAgent 和 WS Streamer 的分析循环使用以下 3 个工具：
+
+| 工具 | 输入 | 输出 | 说明 |
+|------|------|------|------|
+| `run_pipeline` | instrument, timeframe, limit | trend, centers, divergences, signals | 运行确定性 L0-L7 管道 |
+| `compare_divergence` | instrument, large_tf, small_tf | 两个级别的背驰对比 + alignment | 判断大小级别是否共振 |
+| `get_market_summary` | instrument | 4个级别 (1w/1d/30m/5m) 的概览 | 一次调用获取全局视图 |
+
+Agent 执行循环（`tool_executor.py`）：
+1. 构建 system prompt + user message
+2. `model.bind_tools(tools)` 绑定工具
+3. LLM 返回 `tool_use` → 执行 → 结果反馈 → 再次调用 LLM
+4. 最多 8 轮迭代，直到 LLM 不再调用工具
+5. 解析最终 JSON 响应
 
 ---
 
@@ -235,107 +315,83 @@ Polygon.io  ──(REST API)──►  agent-service /ingest  ──►  InfluxD
 zenalpha/
 ├── frontend/                          # React 18 SPA
 │   ├── src/
-│   │   ├── pages/                     # 态势总览, 区间套, 缠论图表, 持仓, 回顾, 回测, 设置
-│   │   ├── components/
-│   │   │   ├── chart/ChanChart.tsx    # 核心图表组件 (6层叠加 + MACD子图)
-│   │   │   └── layout/               # AppLayout, Sidebar
+│   │   ├── pages/                     # 态势总览, 区间套, Pipeline, 缠论图表, 回测...
+│   │   ├── components/chart/          # ChanChart (6层叠加 + MACD子图)
 │   │   ├── stores/                    # Zustand (auth, watchlist)
-│   │   ├── api/                       # agent.ts, data.ts, auth.ts, http.ts
-│   │   ├── lib/                       # cn.ts, chan-labels.ts (术语映射)
+│   │   ├── api/                       # agent.ts, data.ts, auth.ts
 │   │   └── types/                     # chan.ts, api.ts
-│   └── tailwind.config.ts
 │
 ├── chanquant/                         # Python 缠论核心库
 │   ├── core/
 │   │   ├── objects.py                 # 不可变数据类: RawKLine, Fractal, Stroke, Segment, Center...
-│   │   ├── pipeline.py                # AnalysisPipeline (L0-L8 串联)
+│   │   ├── pipeline.py                # AnalysisPipeline (确定性 L0-L8)
 │   │   ├── kline.py                   # L0 包含关系处理
 │   │   ├── fractal.py                 # L1 分型识别
 │   │   ├── stroke.py                  # L2 笔的划分
-│   │   ├── segment.py                 # L3 线段划分
-│   │   ├── center.py                  # L4 中枢识别
-│   │   ├── trend.py                   # L5 趋势分类
-│   │   ├── divergence.py              # L6 背驰判断
-│   │   ├── signal.py                  # L7 买卖点生成
+│   │   ├── segment.py                 # L3 线段划分 (特征序列)
+│   │   ├── center.py                  # L4 中枢识别 (重叠+延伸+扩展)
+│   │   ├── trend.py                   # L5 趋势分类 (a+A+b+B+c)
+│   │   ├── divergence.py              # L6 背驰判断 (面积/DIF/量能 三重确认)
+│   │   ├── signal.py                  # L7 买卖点 (B1-B3, S1-S3)
+│   │   ├── nesting.py                 # L8 区间套
 │   │   └── macd.py                    # MACD 增量计算
+│   ├── agents/
+│   │   ├── langgraph_pipeline.py      # LangGraph LLM Pipeline (L3-L8 Agent 链)
+│   │   ├── nester.py                  # NesterAgent (tool_use + 3层fallback)
+│   │   ├── tool_defs.py               # 3个工具定义 + 执行器
+│   │   ├── tool_executor.py           # Agentic loop (invoke→tool→result→repeat)
+│   │   ├── bedrock.py                 # Bedrock model factory (Claude Sonnet)
+│   │   └── prompts.py                 # Agent prompt 加载
 │   ├── api/
-│   │   └── gateway.py                 # FastAPI 网关 (8 endpoints)
+│   │   └── gateway.py                 # FastAPI (REST + 速率限制 + 输入校验)
 │   ├── data/
-│   │   ├── timestream.py              # InfluxDB 客户端 (读写 K 线)
-│   │   └── polygon.py                 # Polygon.io 客户端
+│   │   ├── timestream.py              # InfluxDB 客户端 (白名单防注入)
+│   │   ├── polygon.py                 # Polygon REST 客户端
+│   │   └── ws_stream.py              # WebSocket 实时流 (聚合 + 分析 + 重连)
 │   └── backtest/
-│       └── engine.py                  # 事件驱动回测引擎
+│       ├── engine.py                  # 事件驱动回测
+│       └── nesting_engine.py          # 多级别区间套回测
 │
-├── services/                          # Java 微服务 (Maven multi-module)
-│   ├── pom.xml                        # Parent POM
-│   ├── common/                        # 共享: Enum + Record + DTO + Exception
-│   ├── eureka-server/                 # 服务注册中心 (port 8761)
-│   ├── gateway/                       # API 网关 + JWT (port 8080)
-│   ├── signal-service/                # 信号服务 (port 8081)
-│   ├── backtest-service/              # 回测服务 (port 8082)
-│   ├── data-service/                  # 标的管理 (port 8083, K线已迁至InfluxDB)
-│   ├── user-service/                  # JWT 认证 + Watchlist (port 8084)
-│   └── notification-service/          # 邮件 + Webhook 通知 (port 8085)
+├── services/                          # Java 微服务
+│   ├── gateway/                       # API 网关 + JWT
+│   ├── signal-service/                # 信号持久化
+│   ├── data-service/                  # 标的管理
+│   ├── user-service/                  # 认证 + Watchlist
+│   └── ...
 │
 ├── terraform/                         # AWS IaC
-│   ├── main.tf                        # 入口
 │   ├── modules/
-│   │   ├── vpc/                       # 3 AZ, public/private subnets, NAT
-│   │   ├── eks/                       # EKS 1.29 + managed node group
+│   │   ├── vpc/                       # 3 AZ, public/private subnets
+│   │   ├── eks/                       # EKS 1.29
 │   │   ├── rds/                       # MySQL 8.0
 │   │   ├── timestream/                # Amazon Timestream for InfluxDB
-│   │   ├── ecr/                       # 容器镜像仓库
 │   │   └── frontend/                  # S3 + CloudFront (OAC) + WAF
-│   └── k8s/                           # Kubernetes 部署清单
-│       ├── agent-service/             # Deployment + CronJob (daily-ingest)
-│       ├── gateway/                   # Deployment + ConfigMap + Service
-│       ├── eureka/                    # StatefulSet
-│       ├── apollo/                    # ConfigDB init + Deployments
-│       └── ...                        # signal, backtest, data, user, notification
+│   └── k8s/
+│       ├── agent-service/             # Deployment + ws-streamer + CronJobs
+│       └── ...
+│
+├── scripts/
+│   ├── deploy-k8s.sh                 # K8s 部署脚本
+│   └── bulk_ingest.py                # 一次性历史数据导入
 │
 ├── Dockerfile.agent                   # Python agent-service 多阶段构建
-├── tests/                             # Python 单元测试
 └── docs/
     └── algorithm.md                   # 算法规格 (10层详解 + 修正说明)
 ```
 
 ---
 
-## MySQL 表结构
+## 设计原则
 
-9 张表，跨 4 个服务：
-
-| Service | Tables |
-|---------|--------|
-| data-service | `instrument` |
-| signal-service | `signal_record` |
-| backtest-service | `backtest_result`, `trade` |
-| user-service | `users`, `watchlists`, `watchlist_instruments` |
-| notification-service | `notification_configs`, `notification_logs` |
-
-> K 线数据已迁移至 InfluxDB，不再存储在 MySQL。
-
----
-
-## AWS 基础设施
-
-| 资源 | 规格 |
+| 原则 | 实现 |
 |------|------|
-| VPC | 3 AZ, 6 subnets (3 public + 3 private), 1 NAT GW |
-| EKS | Kubernetes 1.29, 1x t3.medium (Karpenter) + Nx c7i.large (workloads) |
-| RDS | MySQL 8.0, db.t3.micro, private subnet, SSL enabled |
-| Timestream for InfluxDB | InfluxDB v2, bucket `marketdata`, org `zenalpha` |
-| CloudFront | S3 origin (OAC) + ALB origin (/api/*), WAF, SPA routing |
-| ECR | Container registries for all services |
-| Apollo | Config center (configservice + adminservice + portal) |
-| Karpenter | Auto-scales c7i.large worker nodes |
-
-Region: `us-west-2`
-
-> **📖 完整部署文档：[docs/deployment-guide-zh.md](docs/deployment-guide-zh.md)**
-> **📖 Deployment Guide (EN): [docs/deployment-guide-en.md](docs/deployment-guide-en.md)**
->
-> 包含 Terraform、Karpenter、K8s、InfluxDB、Apollo、前端的分步指南、密钥管理、运维手册和故障排查。
+| **BigDecimal 精度** | 所有价格/金融数值用 `Decimal`，核心算法无 `float` |
+| **不可变数据** | Python `@dataclass(frozen=True)` + `NamedTuple` |
+| **确定性优先** | 核心管道纯确定性，LLM 是增强而非替代 |
+| **优雅降级** | LLM 不可用时自动 fallback 到确定性路径 |
+| **幂等写入** | InfluxDB 相同 tags+timestamp 覆盖，不产生重复 |
+| **原文可追溯** | 每个信号附带 `source_lesson` 字段 |
+| **IaC** | 全部基础设施 Terraform 管理 |
 
 ---
 
@@ -352,13 +408,9 @@ cd frontend
 npm ci
 npm run dev         # http://localhost:5173
 
-# Java 微服务 — 需要 JDK 17 + Maven 3.9+
-cd ../services
-mvn clean package -DskipTests
-
 # Python 缠论引擎 — 需要 Python 3.12+
 cd ..
-pip install -e ".[api]"
+pip install -e ".[api,agents,streaming]"
 uvicorn chanquant.api.gateway:app --port 8090
 ```
 
@@ -366,35 +418,30 @@ uvicorn chanquant.api.gateway:app --port 8090
 
 ```bash
 cd terraform
-cp terraform.tfvars.example terraform.tfvars    # 编辑配置
-cat > secrets.auto.tfvars << 'EOF'              # 创建密钥文件（gitignored）
+cp terraform.tfvars.example terraform.tfvars
+cat > secrets.auto.tfvars << 'EOF'
 db_password        = "<strong-password>"
 influxdb_password  = "<strong-password>"
 influxdb_api_token = "<created-after-influxdb-init>"
 polygon_api_key    = "<your-key>"
 EOF
 
-terraform init && terraform apply               # ~20 min
+terraform init && terraform apply
 aws eks update-kubeconfig --name zenalpha-prod-eks --region us-west-2
-scripts/build-all.sh                            # 构建 + 推送镜像
-scripts/deploy-k8s.sh                           # 部署 K8s 工作负载
+scripts/build-all.sh
+scripts/deploy-k8s.sh
 ```
 
-> 详细步骤见 [docs/deployment-guide.md](docs/deployment-guide.md)
+### 前端部署
 
----
-
-## 设计原则
-
-| 原则 | 实现 |
-|------|------|
-| **BigDecimal 精度** | 所有价格/金融数值用 `BigDecimal` (Python `Decimal`)，核心算法无 `float` |
-| **不可变数据** | Python `@dataclass(frozen=True)` + `NamedTuple`；Java `record` + `List.of()` |
-| **微服务隔离** | 每服务独立部署、独立扩缩，agent-service 独立 Python 运行时 |
-| **原文可追溯** | 每个信号附带 `source_lesson` 字段，映射缠论原文课号 |
-| **IaC** | 全部基础设施 Terraform 管理 |
-| **时序分离** | K 线数据存 InfluxDB（高效查询），业务数据存 MySQL |
-| **中文化** | 缠论术语全中文显示（一买/二买/笔/线段/中枢/背驰） |
+```bash
+cd frontend
+npm run build
+aws s3 sync dist/ s3://zenalpha-prod-frontend/ --delete
+aws s3 cp dist/index.html s3://zenalpha-prod-frontend/index.html \
+  --cache-control "no-cache, no-store, must-revalidate"
+aws cloudfront create-invalidation --distribution-id E2AYS09PAJLLZD --paths "/*"
+```
 
 ---
 
@@ -402,25 +449,26 @@ scripts/deploy-k8s.sh                           # 部署 K8s 工作负载
 
 | Phase | 内容 | 状态 |
 |-------|------|------|
-| **0+1** | 10 层算法管道 + 回测引擎 + Python CLI | ✅ Done |
+| **0+1** | 10 层确定性算法管道 + 回测引擎 + Python CLI | ✅ Done |
 | **2** | Java 微服务 + Terraform + K8s | ✅ Done |
-| **3** | React 前端重写 + InfluxDB 时序存储 + agent-service | ✅ Done |
-| 4 | LLM Agent 编排 (LangGraph + Bedrock) | Planned |
+| **3** | React 前端 + InfluxDB 时序存储 + agent-service | ✅ Done |
+| **4** | LLM Agent 编排 (LangGraph + Bedrock + tool_use) | ✅ Done |
+| **4.5** | 实时数据流 (Massive WebSocket + 聚合 + 15min分析) | ✅ Done |
 | 5 | 加密货币扩展 (Binance WebSocket) | Planned |
 | 6 | 实时信号推送 (WebSocket + SNS) | Planned |
 
 ---
 
-## 代码统计
+## 缠论术语映射
 
-| 模块 | 文件数 | 代码行数 |
-|------|--------|----------|
-| chanquant/ (Python) | 79 | ~7,000 |
-| frontend/ (React+TS) | 24 | ~3,000 |
-| services/ (Java) | 202 | ~6,000 |
-| terraform/ (HCL) | 50 | ~1,700 |
-| k8s/ (YAML) | 46 | ~1,050 |
-| **Total** | **~401** | **~18,750** |
+| 代号 | 中文 | 英文 |
+|------|------|------|
+| B1 | 一买 | First Buy Point |
+| B2 | 二买 | Second Buy Point |
+| B3 | 三买 | Third Buy Point |
+| S1 | 一卖 | First Sell Point |
+| S2 | 二卖 | Second Sell Point |
+| S3 | 三卖 | Third Sell Point |
 
 ## License
 

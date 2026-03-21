@@ -90,15 +90,25 @@ class NestingBacktestEngine:
         if risk_params is not None:
             self._risk_params = risk_params
             self._stop_loss_atr_mult = risk_params.stop_loss_atr_mult
-            self._stop_loss_pct = stop_loss_pct  # fallback if no ATR
+            # Fallback stop loss: use stop_loss_atr_mult * avg_atr_pct (~1-2%)
+            # as a rough percentage when ATR data is unavailable
+            self._stop_loss_pct = Decimal(str(
+                float(risk_params.stop_loss_atr_mult) * 0.015
+            ))
             self._max_position_pct = risk_params.max_position_pct
             self._max_positions = risk_params.max_concurrent_positions
+            self._trailing_stop_enabled = risk_params.trailing_stop_enabled
+            self._trailing_stop_pct = risk_params.trailing_stop_pct
         else:
             self._risk_params = RiskParams()
             self._stop_loss_atr_mult = Decimal("2")
             self._stop_loss_pct = stop_loss_pct
             self._max_position_pct = max_position_pct
             self._max_positions = 10
+            self._trailing_stop_enabled = True
+            self._trailing_stop_pct = Decimal("0.03")
+        # Track high water mark per position for trailing stop
+        self._position_hwm: dict[str, Decimal] = {}
 
     def run(
         self,
@@ -146,11 +156,38 @@ class NestingBacktestEngine:
         for timestamp, bars in timeline:
             snapshot = replace(snapshot, timestamp=timestamp)
 
-            # Check stop losses
+            # 1. Stop losses (hard stop + trailing stop)
             snapshot = self._check_stops(snapshot, bars)
 
+            # 2. Sell signal exits — relaxed: depth >= 1, skip risk gate
+            #    Mirrors DecisionAgent: sell signals bypass risk manager
             for inst in bars:
-                # Must pass multi-TF nesting — no fallback to single-TF
+                if not any(p.instrument == inst for p in snapshot.positions):
+                    continue
+                sell_sig = self._find_sell_signal(
+                    all_signals.get(inst, {}), timestamp, processed_signals, inst,
+                )
+                if sell_sig is None:
+                    continue
+                sig_key = f"{inst}:{sell_sig.signal_type.value}:{sell_sig.timestamp}"
+                processed_signals.add(sig_key)
+                bar = bars[inst]
+                old_snap = snapshot
+                snapshot = self._try_close(snapshot, sell_sig, bar)
+                if snapshot is not old_snap:
+                    self._position_hwm.pop(inst, None)
+                    trade_log.append({
+                        "action": "SELL",
+                        "instrument": inst,
+                        "timestamp": str(timestamp),
+                        "price": str(sell_sig.price),
+                        "signal": sell_sig.signal_type.value,
+                        "nesting_depth": 1,
+                        "aligned": True,
+                    })
+
+            # 3. Buy signal entries — strict: nesting + alignment + confidence + risk gate
+            for inst in bars:
                 nested = self._find_nested_signals(
                     all_signals.get(inst, {}), timestamp
                 )
@@ -159,15 +196,10 @@ class NestingBacktestEngine:
 
                 nesting_depth = nested.nesting_depth
                 aligned = nested.direction_aligned
-                large_sig = nested.large_signal
-                medium_sig = nested.medium_signal
-                precise_sig = nested.precise_signal
 
-                # Direction alignment check
                 if self._require_alignment and not aligned:
                     continue
 
-                # Confidence gate (mirrors DecisionAgent deterministic logic)
                 confidence = min(
                     Decimal("1"),
                     Decimal(nesting_depth) * Decimal("0.3")
@@ -176,7 +208,6 @@ class NestingBacktestEngine:
                 if confidence < self._min_confidence:
                     continue
 
-                # Pick the most precise signal for execution
                 action_signal = (
                     nested.precise_signal
                     or nested.medium_signal
@@ -184,90 +215,91 @@ class NestingBacktestEngine:
                 )
                 if action_signal is None:
                     continue
-
-                # Strategy filter: signal type + strength
+                if not _is_buy_signal(action_signal.signal_type):
+                    continue
                 if action_signal.signal_type.value not in self._allowed_signals:
                     continue
                 if action_signal.strength < self._min_strength:
                     continue
 
-                is_sell = action_signal.signal_type in (
-                    SignalType.S1, SignalType.S2, SignalType.S3,
+                # RiskManager gate
+                nesting_result = {
+                    "nesting_depth": nesting_depth,
+                    "direction_aligned": aligned,
+                    "confidence": str(confidence),
+                    "per_level": {},
+                }
+                current_drawdown = (
+                    (snapshot.peak_equity - snapshot.equity) / snapshot.peak_equity
+                    if snapshot.peak_equity > _ZERO else _ZERO
                 )
+                atr_val = _ZERO
+                atr_series = self._atr_data.get(inst, {})
+                for ts in sorted(atr_series.keys(), reverse=True):
+                    if ts <= timestamp:
+                        atr_val = atr_series[ts]
+                        break
 
-                # RiskManager gate (skip for sell/exit signals)
-                if not is_sell:
-                    # Build nesting_result dict for risk manager
-                    nesting_result = {
-                        "nesting_depth": nesting_depth,
-                        "direction_aligned": aligned,
-                        "confidence": str(confidence),
-                        "per_level": {},
-                    }
-                    current_drawdown = (
-                        (snapshot.peak_equity - snapshot.equity) / snapshot.peak_equity
-                        if snapshot.peak_equity > _ZERO else _ZERO
-                    )
-                    atr_val = _ZERO
-                    atr_series = self._atr_data.get(inst, {})
-                    for ts in sorted(atr_series.keys(), reverse=True):
-                        if ts <= timestamp:
-                            atr_val = atr_series[ts]
-                            break
+                risk_result = self._risk_manager.evaluate(
+                    nesting_result=nesting_result,
+                    params=self._risk_params,
+                    equity=snapshot.equity,
+                    current_positions=len(snapshot.positions),
+                    current_drawdown=current_drawdown,
+                    atr_value=atr_val,
+                    current_price=bars[inst].close,
+                )
+                if not risk_result.approved:
+                    continue
 
-                    risk_result = self._risk_manager.evaluate(
-                        nesting_result=nesting_result,
-                        params=self._risk_params,
-                        equity=snapshot.equity,
-                        current_positions=len(snapshot.positions),
-                        current_drawdown=current_drawdown,
-                        atr_value=atr_val,
-                        current_price=bars[inst].close,
-                    )
-                    if not risk_result.approved:
-                        continue
-
-                # Dedup: don't process same signal twice
                 sig_key = f"{inst}:{action_signal.signal_type.value}:{action_signal.timestamp}"
                 if sig_key in processed_signals:
                     continue
                 processed_signals.add(sig_key)
 
                 bar = bars[inst]
-                if _is_buy_signal(action_signal.signal_type):
-                    old_snap = snapshot
-                    snapshot = self._try_open(snapshot, action_signal, bar)
-                    if snapshot is not old_snap:
-                        trade_log.append({
-                            "action": "BUY",
-                            "instrument": inst,
-                            "timestamp": str(timestamp),
-                            "price": str(action_signal.price),
-                            "signal": action_signal.signal_type.value,
-                            "nesting_depth": nesting_depth,
-                            "aligned": aligned,
-                            "large": large_sig.signal_type.value if large_sig else None,
-                            "medium": medium_sig.signal_type.value if medium_sig else None,
-                            "precise": precise_sig.signal_type.value if precise_sig else None,
-                        })
-                else:
-                    old_snap = snapshot
-                    snapshot = self._try_close(snapshot, action_signal, bar)
-                    if snapshot is not old_snap:
-                        trade_log.append({
-                            "action": "SELL",
-                            "instrument": inst,
-                            "timestamp": str(timestamp),
-                            "price": str(action_signal.price),
-                            "signal": action_signal.signal_type.value,
-                            "nesting_depth": nesting_depth,
-                            "aligned": aligned,
-                        })
+                old_snap = snapshot
+                snapshot = self._try_open(snapshot, action_signal, bar)
+                if snapshot is not old_snap:
+                    large_sig = nested.large_signal
+                    medium_sig = nested.medium_signal
+                    precise_sig = nested.precise_signal
+                    trade_log.append({
+                        "action": "BUY",
+                        "instrument": inst,
+                        "timestamp": str(timestamp),
+                        "price": str(action_signal.price),
+                        "signal": action_signal.signal_type.value,
+                        "nesting_depth": nesting_depth,
+                        "aligned": aligned,
+                        "large": large_sig.signal_type.value if large_sig else None,
+                        "medium": medium_sig.signal_type.value if medium_sig else None,
+                        "precise": precise_sig.signal_type.value if precise_sig else None,
+                    })
 
             # Update equity
             prices = {inst: bar.close for inst, bar in bars.items()}
             snapshot = self._portfolio.update_equity(snapshot, prices)
             snapshots.append(snapshot)
+
+        # Force-close all remaining positions at last bar price
+        if timeline:
+            last_bars = timeline[-1][1]
+            for position in list(snapshot.positions):
+                bar = last_bars.get(position.instrument)
+                if bar is not None:
+                    snapshot = self._portfolio.close_position(
+                        snapshot, position.instrument, bar.close, "backtest_end"
+                    )
+                    trade_log.append({
+                        "action": "SELL",
+                        "instrument": position.instrument,
+                        "timestamp": str(timeline[-1][0]),
+                        "price": str(bar.close),
+                        "signal": "END",
+                        "nesting_depth": 0,
+                        "aligned": True,
+                    })
 
         all_trades = snapshots[-1].trades
         metrics = calculate_metrics(snapshots, all_trades)
@@ -345,6 +377,34 @@ class NestingBacktestEngine:
 
         return self._nester.nest(active)
 
+    def _find_sell_signal(
+        self,
+        signals_by_tf: dict[TimeFrame, list[Signal]],
+        current_time: datetime,
+        processed: set[str],
+        instrument: str,
+    ) -> Signal | None:
+        """Find any active sell signal (single-TF is enough for exits).
+
+        Mirrors DecisionAgent: sell signals bypass risk gate and strict
+        nesting requirements. Only needs one TF to confirm an exit.
+        """
+        best: Signal | None = None
+        for tf, sigs in signals_by_tf.items():
+            lookback = _SIGNAL_LOOKBACK.get(tf, timedelta(days=10))
+            window_start = current_time - lookback
+            for s in sigs:
+                if s.signal_type not in (SignalType.S1, SignalType.S2, SignalType.S3):
+                    continue
+                if not (window_start <= s.timestamp <= current_time):
+                    continue
+                sig_key = f"{instrument}:{s.signal_type.value}:{s.timestamp}"
+                if sig_key in processed:
+                    continue
+                if best is None or s.timestamp > best.timestamp:
+                    best = s
+        return best
+
     # ── Trade execution ──────────────────────────────────────────────────────
 
     def _get_stop_distance(self, instrument: str, timestamp: datetime, price: Decimal) -> Decimal:
@@ -366,23 +426,48 @@ class NestingBacktestEngine:
         snapshot: PortfolioSnapshot,
         bars: dict[str, RawKLine],
     ) -> PortfolioSnapshot:
-        for position in snapshot.positions:
+        for position in list(snapshot.positions):
             bar = bars.get(position.instrument)
             if bar is None:
                 continue
-            stop_dist = self._get_stop_distance(
-                position.instrument, bar.timestamp, position.entry_price,
-            )
+
+            inst = position.instrument
+            exit_dir = Direction.DOWN if position.direction == Direction.UP else Direction.UP
+
+            # Update high water mark for trailing stop
+            if inst not in self._position_hwm:
+                self._position_hwm[inst] = position.entry_price
+            if position.direction == Direction.UP:
+                self._position_hwm[inst] = max(self._position_hwm[inst], bar.high)
+            else:
+                self._position_hwm[inst] = min(self._position_hwm[inst], bar.low)
+
+            # 1. ATR-based hard stop loss
+            stop_dist = self._get_stop_distance(inst, bar.timestamp, position.entry_price)
             if _stop_triggered_atr(position, bar, stop_dist):
-                stop_price = self._slippage.apply(
-                    bar.close,
-                    Direction.DOWN if position.direction == Direction.UP else Direction.UP,
-                    bar.volume,
-                    "mid_cap",
-                )
-                snapshot = self._portfolio.close_position(
-                    snapshot, position.instrument, stop_price, "stop_loss"
-                )
+                stop_price = self._slippage.apply(bar.close, exit_dir, bar.volume, "mid_cap")
+                snapshot = self._portfolio.close_position(snapshot, inst, stop_price, "stop_loss")
+                self._position_hwm.pop(inst, None)
+                continue
+
+            # 2. Trailing stop
+            if self._trailing_stop_enabled and self._trailing_stop_pct > _ZERO:
+                hwm = self._position_hwm[inst]
+                if position.direction == Direction.UP:
+                    trail_stop = hwm * (_ONE - self._trailing_stop_pct)
+                    if bar.low <= trail_stop:
+                        stop_price = self._slippage.apply(bar.close, exit_dir, bar.volume, "mid_cap")
+                        snapshot = self._portfolio.close_position(snapshot, inst, stop_price, "trailing_stop")
+                        self._position_hwm.pop(inst, None)
+                        continue
+                else:
+                    trail_stop = hwm * (_ONE + self._trailing_stop_pct)
+                    if bar.high >= trail_stop:
+                        stop_price = self._slippage.apply(bar.close, exit_dir, bar.volume, "mid_cap")
+                        snapshot = self._portfolio.close_position(snapshot, inst, stop_price, "trailing_stop")
+                        self._position_hwm.pop(inst, None)
+                        continue
+
         return snapshot
 
     def _try_open(

@@ -212,7 +212,7 @@ class NestingBacktestEngine:
                             })
 
             # ── 2. Stop losses (hard stop + trailing stop) ──
-            snapshot = self._check_stops(snapshot, bars)
+            snapshot = self._check_stops(snapshot, bars, trade_log)
 
             # ── 3. Sell signal exits — single-TF S signal enough ──
             for inst in bars:
@@ -499,6 +499,7 @@ class NestingBacktestEngine:
         self,
         snapshot: PortfolioSnapshot,
         bars: dict[str, RawKLine],
+        trade_log: list[dict],
     ) -> PortfolioSnapshot:
         for position in list(snapshot.positions):
             bar = bars.get(position.instrument)
@@ -522,6 +523,13 @@ class NestingBacktestEngine:
                 stop_price = self._slippage.apply(bar.close, exit_dir, bar.volume, "mid_cap")
                 snapshot = self._portfolio.close_position(snapshot, inst, stop_price, "stop_loss")
                 self._position_hwm.pop(inst, None)
+                trade_log.append({
+                    "action": "SELL", "instrument": inst,
+                    "timestamp": str(bar.timestamp),
+                    "price": str(stop_price),
+                    "signal": f"止损(ATR×{self._stop_loss_atr_mult})",
+                    "nesting_depth": 0, "aligned": True,
+                })
                 continue
 
             # 2. Trailing stop
@@ -533,6 +541,13 @@ class NestingBacktestEngine:
                         stop_price = self._slippage.apply(bar.close, exit_dir, bar.volume, "mid_cap")
                         snapshot = self._portfolio.close_position(snapshot, inst, stop_price, "trailing_stop")
                         self._position_hwm.pop(inst, None)
+                        trade_log.append({
+                            "action": "SELL", "instrument": inst,
+                            "timestamp": str(bar.timestamp),
+                            "price": str(stop_price),
+                            "signal": f"追踪止损(HWM:{hwm:.2f})",
+                            "nesting_depth": 0, "aligned": True,
+                        })
                         continue
                 else:
                     trail_stop = hwm * (_ONE + self._trailing_stop_pct)
@@ -540,6 +555,13 @@ class NestingBacktestEngine:
                         stop_price = self._slippage.apply(bar.close, exit_dir, bar.volume, "mid_cap")
                         snapshot = self._portfolio.close_position(snapshot, inst, stop_price, "trailing_stop")
                         self._position_hwm.pop(inst, None)
+                        trade_log.append({
+                            "action": "SELL", "instrument": inst,
+                            "timestamp": str(bar.timestamp),
+                            "price": str(stop_price),
+                            "signal": f"追踪止损(HWM:{hwm:.2f})",
+                            "nesting_depth": 0, "aligned": True,
+                        })
                         continue
 
         return snapshot

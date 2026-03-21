@@ -32,11 +32,16 @@ export default {
       animation: {
         pulse_slow: 'pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite',
         blink: 'blink 1.2s step-end infinite',
+        'slide-in': 'slide-in 0.2s ease-out',
       },
       keyframes: {
         blink: {
           '0%, 100%': { opacity: 1 },
           '50%': { opacity: 0 },
+        },
+        'slide-in': {
+          from: { transform: 'translateX(-100%)' },
+          to: { transform: 'translateX(0)' },
         },
       },
     },

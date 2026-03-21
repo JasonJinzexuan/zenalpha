@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, LineChart, Sliders, ChevronDown,
   Settings, LogOut, List, Bell, Target, FlaskConical,
+  Menu, X,
 } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
 import { cn } from '@/lib/cn'
@@ -43,20 +44,43 @@ export default function Sidebar() {
   const { username, logout } = useAuthStore()
   const location = useLocation()
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({})
+  const [mobileOpen, setMobileOpen] = useState(false)
+
+  // Close mobile menu on route change
+  useEffect(() => {
+    setMobileOpen(false)
+  }, [location.pathname])
+
+  // Close on escape key
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMobileOpen(false)
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [])
 
   const toggle = (idx: number) =>
     setCollapsed(prev => ({ ...prev, [idx]: !prev[idx] }))
 
-  // Auto-expand section containing the current route
   const isInSection = (section: NavSection) =>
     section.children.some(c => location.pathname.startsWith(c.to))
 
-  return (
-    <aside className="w-52 h-screen sticky top-0 flex flex-col border-r border-bg-border bg-bg-card/50 shrink-0">
+  const navContent = (
+    <>
       {/* Logo */}
-      <div className="px-4 py-5 border-b border-bg-border">
-        <div className="text-accent-cyan text-sm font-bold tracking-[3px]">ZEN</div>
-        <div className="text-text-muted text-[10px] tracking-[2px] mt-0.5">ALPHA TERMINAL</div>
+      <div className="px-4 py-5 border-b border-bg-border flex items-center justify-between">
+        <div>
+          <div className="text-accent-cyan text-sm font-bold tracking-[3px]">ZEN</div>
+          <div className="text-text-muted text-[10px] tracking-[2px] mt-0.5">ALPHA TERMINAL</div>
+        </div>
+        {/* Mobile close button */}
+        <button
+          onClick={() => setMobileOpen(false)}
+          className="md:hidden p-1.5 rounded hover:bg-bg-hover text-text-muted"
+        >
+          <X size={16} />
+        </button>
       </div>
 
       {/* Nav */}
@@ -67,7 +91,6 @@ export default function Sidebar() {
 
           return (
             <div key={idx} className="mb-1">
-              {/* Section header */}
               <button
                 onClick={() => toggle(idx)}
                 className="w-full flex items-center justify-between px-4 py-2 text-[10px] tracking-wider text-text-muted hover:text-text-primary transition-colors"
@@ -82,7 +105,6 @@ export default function Sidebar() {
                 />
               </button>
 
-              {/* Sub-items */}
               {isOpen && (
                 <div className="space-y-0.5">
                   {section.children.map(({ to, label, icon: Icon }) => (
@@ -124,6 +146,40 @@ export default function Sidebar() {
           </button>
         </div>
       </div>
-    </aside>
+    </>
+  )
+
+  return (
+    <>
+      {/* Mobile hamburger button — fixed top-left */}
+      <button
+        onClick={() => setMobileOpen(true)}
+        className="md:hidden fixed top-3 left-3 z-50 p-2 rounded-lg bg-bg-card border border-bg-border text-text-muted hover:text-text-primary transition-colors"
+        aria-label="Open menu"
+      >
+        <Menu size={18} />
+      </button>
+
+      {/* Mobile overlay */}
+      {mobileOpen && (
+        <div
+          className="md:hidden fixed inset-0 z-40 bg-black/60 backdrop-blur-sm"
+          onClick={() => setMobileOpen(false)}
+        />
+      )}
+
+      {/* Sidebar — desktop: static, mobile: slide-in drawer */}
+      <aside
+        className={cn(
+          'h-screen flex flex-col border-r border-bg-border bg-bg-card/95 backdrop-blur-md shrink-0 z-50',
+          // Desktop
+          'hidden md:flex md:sticky md:top-0 md:w-52',
+          // Mobile drawer
+          mobileOpen && '!flex fixed top-0 left-0 w-64 shadow-2xl animate-slide-in',
+        )}
+      >
+        {navContent}
+      </aside>
+    </>
   )
 }

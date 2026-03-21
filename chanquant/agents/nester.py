@@ -11,6 +11,7 @@ Falls back to deterministic nesting when LLM is unavailable.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field, ValidationError
@@ -77,6 +78,7 @@ _NESTING_SYSTEM_PROMPT = """\
 ### 第四步：硬规则
 - 嵌套深度 < 2 → actionable=false，status="观察中"
 - 嵌套深度 ≥ 2 且方向一致 → 可操作
+- 过时信号无效：周线>6个月、日线>30天、30m>5天、5m>2天的信号视为过时，不作为决策依据
 
 ### 第五步：综合输出
 **所有文字输出必须使用中文**，结构化为：结论→依据→风险
@@ -218,6 +220,37 @@ class NesterAgent:
         "30m": 2000, "15m": 3000, "5m": 3000,
     }
 
+    # Max signal age per TF — signals older than this are stale and ignored
+    _SIGNAL_MAX_AGE: dict[str, timedelta] = {
+        "1w": timedelta(weeks=26),   # ~6 months
+        "1d": timedelta(days=30),    # 1 month
+        "1h": timedelta(days=7),     # 1 week
+        "30m": timedelta(days=5),    # 5 days
+        "15m": timedelta(days=3),    # 3 days
+        "5m": timedelta(days=2),     # 2 days
+    }
+
+    @staticmethod
+    def _filter_stale_signals(
+        signals: list[dict], max_age: timedelta, now: datetime,
+    ) -> list[dict]:
+        """Remove signals older than max_age."""
+        cutoff = now - max_age
+        result = []
+        for s in signals:
+            ts_str = s.get("timestamp", "")
+            if not ts_str:
+                continue
+            try:
+                ts = datetime.fromisoformat(ts_str)
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if ts >= cutoff:
+                    result.append(s)
+            except (ValueError, TypeError):
+                continue
+        return result
+
     def _deterministic_multi_tf(self, instrument: str) -> dict[str, Any] | None:
         """Deterministic multi-TF analysis: run pipeline for each TF, synthesize."""
         results: dict[str, dict] = {}
@@ -257,6 +290,7 @@ class NesterAgent:
         nesting_path = []
         per_level_direction: dict[str, dict] = {}
         all_signals: dict[str, list[dict]] = {}
+        now = datetime.now(timezone.utc)
 
         for tf_str in primary_tfs:
             result = results.get(tf_str)
@@ -278,7 +312,12 @@ class NesterAgent:
                 key=lambda s: s.get("timestamp", ""),
                 reverse=True,
             )
-            sig_types = [s["signal_type"] for s in sigs]
+
+            # Filter out stale signals based on timeframe-specific max age
+            max_age = self._SIGNAL_MAX_AGE.get(tf_str, timedelta(days=30))
+            sigs_sorted = self._filter_stale_signals(sigs_sorted, max_age, now)
+
+            sig_types = [s["signal_type"] for s in sigs_sorted]
 
             path_entry = f"{tf_str}:{trend_cls}"
             if sig_types:

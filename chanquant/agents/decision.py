@@ -189,7 +189,18 @@ class DecisionAgent:
         confidence = float(nesting.get("confidence", 0))
 
         large_sig = nesting.get("large_signal", "")
-        is_buy = large_sig in ("B1", "B2", "B3")
+        medium_sig = nesting.get("medium_signal", "")
+        precise_sig = nesting.get("precise_signal", "")
+
+        # Determine if there's any signal at all
+        has_any_signal = bool(large_sig or medium_sig or precise_sig)
+        if not has_any_signal:
+            logger.info(f"No actionable signal for {instrument}, skipping")
+            return None
+
+        is_buy = large_sig in ("B1", "B2", "B3") or (
+            not large_sig and (medium_sig in ("B1", "B2", "B3") or precise_sig in ("B1", "B2", "B3"))
+        )
 
         # Build per-level summary
         per_level = nesting.get("per_level", {})

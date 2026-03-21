@@ -67,6 +67,7 @@ export default function SignalAnalysisPage() {
   const [expandedTf, setExpandedTf] = useState<Set<TimeFrame>>(new Set(['1d', '1w', '30m', '5m']))
   const [decisionHistory, setDecisionHistory] = useState<DecisionRecord[]>([])
   const [decisionLoading, setDecisionLoading] = useState(false)
+  const [decisionMessage, setDecisionMessage] = useState<string | null>(null)
 
   // Sync from URL param
   useEffect(() => {
@@ -122,16 +123,21 @@ export default function SignalAnalysisPage() {
 
   async function runDecisionAnalysis() {
     setDecisionLoading(true)
+    setDecisionMessage(null)
     try {
       const res = await triggerDecisions([selectedSymbol], true, activeStrategy)
       if (res.decisions.length > 0) {
         setDecisionHistory(prev => [...res.decisions, ...prev])
+        setDecisionMessage(null)
+      } else {
+        setDecisionMessage('当前无可执行信号 — 区间套分析未发现符合条件的买卖点')
       }
       // Reload full history
       const history = await getDecisionHistory(selectedSymbol, 20)
       setDecisionHistory(history.decisions)
     } catch (err) {
       console.error('Decision analysis failed:', err)
+      setDecisionMessage('决策分析失败，请检查后端服务')
     } finally {
       setDecisionLoading(false)
     }
@@ -399,6 +405,16 @@ export default function SignalAnalysisPage() {
 
       {/* AI Nesting Result */}
       {llmResult && <NestingResultCard result={llmResult} />}
+
+      {/* Decision message when no actionable signal */}
+      {decisionMessage && (
+        <div className="card border-accent-yellow/30">
+          <div className="px-4 py-3 text-[11px] text-accent-yellow flex items-center gap-2">
+            <Zap size={14} />
+            {decisionMessage}
+          </div>
+        </div>
+      )}
 
       {/* Decision History */}
       <DecisionHistoryPanel decisions={decisionHistory} />

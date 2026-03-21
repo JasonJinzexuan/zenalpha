@@ -171,11 +171,10 @@ export default function Sidebar() {
       {/* Sidebar — desktop: static, mobile: slide-in drawer */}
       <aside
         className={cn(
-          'h-screen flex flex-col border-r border-bg-border bg-bg-card/95 backdrop-blur-md shrink-0 z-50',
-          // Desktop
-          'hidden md:flex md:sticky md:top-0 md:w-52',
-          // Mobile drawer
-          mobileOpen && '!flex fixed top-0 left-0 w-64 shadow-2xl animate-slide-in',
+          'h-screen flex-col border-r border-bg-border bg-bg-card/95 backdrop-blur-md shrink-0 z-50',
+          mobileOpen
+            ? 'flex fixed top-0 left-0 w-64 shadow-2xl animate-slide-in'
+            : 'hidden md:flex md:sticky md:top-0 md:w-52',
         )}
       >
         {navContent}

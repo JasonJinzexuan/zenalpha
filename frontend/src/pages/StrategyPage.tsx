@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import {
   FlaskConical, Play, Save, Loader2, CheckCircle2, XCircle,
   TrendingUp, TrendingDown, BarChart3, Settings2, Zap, Shield,
-  Power, History, Trash2,
+  Power, History, Trash2, ChevronDown, ChevronUp,
 } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { useStrategyStore } from '@/stores/strategy'
@@ -335,6 +335,7 @@ export default function StrategyPage() {
                   <MetricsGrid metrics={backtestResult.metrics} />
                   <QualificationGates gates={backtestResult.qualification} />
                   {backtestResult.signal_stats.length > 0 && <SignalStatsTable stats={backtestResult.signal_stats} />}
+                  {backtestResult.trade_log?.length > 0 && <TradeLogTable trades={backtestResult.trade_log} />}
                   {backtestResult.equity_curve.length > 0 && <EquityCurve data={backtestResult.equity_curve} />}
                 </div>
               )}
@@ -529,6 +530,61 @@ function SignalStatsTable({ stats }: { stats: StrategyBacktestResponse['signal_s
           })}
         </tbody>
       </table>
+    </div>
+  )
+}
+
+function TradeLogTable({ trades }: { trades: StrategyBacktestResponse['trade_log'] }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="space-y-1">
+      <button
+        className="flex items-center justify-between w-full text-[11px] text-text-muted hover:text-text-primary"
+        onClick={() => setOpen(!open)}
+      >
+        <span>交易记录 ({trades.length})</span>
+        {open ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+      </button>
+      {open && (
+        <div className="max-h-[300px] overflow-auto">
+          <table className="w-full text-[10px]">
+            <thead>
+              <tr className="text-text-dim border-b border-bg-border sticky top-0 bg-bg-card">
+                <th className="text-left py-1 px-2">时间</th>
+                <th className="text-left py-1 px-2">标的</th>
+                <th className="text-left py-1 px-2">方向</th>
+                <th className="text-right py-1 px-2">价格</th>
+                <th className="text-left py-1 px-2">信号</th>
+                <th className="text-center py-1 px-2">嵌套</th>
+              </tr>
+            </thead>
+            <tbody>
+              {trades.map((t, i) => {
+                const isBuy = t.action === 'BUY'
+                const ts = t.timestamp.includes('T')
+                  ? t.timestamp.slice(0, 16).replace('T', ' ')
+                  : t.timestamp.slice(0, 16)
+                return (
+                  <tr key={i} className="border-b border-bg-border/50">
+                    <td className="py-1 px-2 text-text-dim">{ts}</td>
+                    <td className="py-1 px-2 text-text-primary">{t.instrument}</td>
+                    <td className="py-1 px-2">
+                      <span className={cn('tag', isBuy ? 'tag-red' : 'tag-green')}>
+                        {isBuy ? '买入' : '卖出'}
+                      </span>
+                    </td>
+                    <td className="text-right py-1 px-2 text-text-primary">{parseFloat(t.price).toFixed(2)}</td>
+                    <td className="py-1 px-2 text-text-dim">{t.signal}</td>
+                    <td className="text-center py-1 px-2 text-text-dim">
+                      {t.nesting_depth > 0 ? `${t.nesting_depth}层${t.aligned ? '✓' : '✗'}` : '-'}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }

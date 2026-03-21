@@ -47,6 +47,7 @@ class BacktestResponse(BaseModel):
     qualification: dict[str, Any]
     signal_stats: list[dict[str, Any]]
     trade_count: int
+    trade_log: list[dict[str, Any]] = []
     equity_curve: list[dict[str, str]]
     strategy_params: dict[str, Any]
     risk_params: dict[str, Any]

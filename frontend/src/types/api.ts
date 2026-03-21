@@ -250,6 +250,7 @@ export interface StrategyBacktestResponse {
   qualification: Record<string, QualificationGate>
   signal_stats: SignalStat[]
   trade_count: number
+  trade_log: TradeLogEntry[]
   equity_curve: { timestamp: string; equity: string }[]
   strategy_params: StrategyParams
   risk_params: RiskParams

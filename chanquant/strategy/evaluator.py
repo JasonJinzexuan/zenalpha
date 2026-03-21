@@ -82,6 +82,7 @@ def evaluate_strategy(
         },
         "signal_stats": _format_signal_stats(signal_stats),
         "trade_count": len(trade_log),
+        "trade_log": trade_log,
         "equity_curve": equity_curve,
         "strategy_params": template.strategy.model_dump(mode="json"),
         "risk_params": template.risk.model_dump(mode="json"),

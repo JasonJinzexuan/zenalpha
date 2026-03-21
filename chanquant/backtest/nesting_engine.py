@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 
 from chanquant.core.nesting import IntervalNester
+from chanquant.execution.position import check_portfolio_drawdown
 from chanquant.core.objects import (
     BacktestMetrics,
     Direction,
@@ -158,6 +159,60 @@ class NestingBacktestEngine:
 
             # 1. Stop losses (hard stop + trailing stop)
             snapshot = self._check_stops(snapshot, bars)
+
+            # 1.5 Portfolio-level drawdown circuit breaker
+            if snapshot.positions:
+                current_dd = (
+                    (snapshot.peak_equity - snapshot.equity) / snapshot.peak_equity
+                    if snapshot.peak_equity > _ZERO else _ZERO
+                )
+                dd_action = check_portfolio_drawdown(
+                    current_dd, self._risk_params.max_drawdown_pct,
+                )
+                if dd_action in ("clear_all", "suspend"):
+                    # Force-close ALL positions
+                    for pos in list(snapshot.positions):
+                        bar = bars.get(pos.instrument)
+                        if bar is not None:
+                            snapshot = self._portfolio.close_position(
+                                snapshot, pos.instrument, bar.close, "drawdown_breaker",
+                            )
+                            self._position_hwm.pop(pos.instrument, None)
+                            trade_log.append({
+                                "action": "SELL",
+                                "instrument": pos.instrument,
+                                "timestamp": str(timestamp),
+                                "price": str(bar.close),
+                                "signal": f"DD:{current_dd:.1%}",
+                                "nesting_depth": 0,
+                                "aligned": True,
+                            })
+                elif dd_action == "half_all":
+                    # Close half of positions (worst performers first)
+                    positions_by_pnl = sorted(
+                        snapshot.positions,
+                        key=lambda p: (
+                            bars.get(p.instrument, p).close - p.entry_price  # type: ignore
+                            if p.instrument in bars else _ZERO
+                        ),
+                    )
+                    to_close = len(positions_by_pnl) // 2
+                    for pos in positions_by_pnl[:to_close]:
+                        bar = bars.get(pos.instrument)
+                        if bar is not None:
+                            snapshot = self._portfolio.close_position(
+                                snapshot, pos.instrument, bar.close, "drawdown_reduce",
+                            )
+                            self._position_hwm.pop(pos.instrument, None)
+                            trade_log.append({
+                                "action": "SELL",
+                                "instrument": pos.instrument,
+                                "timestamp": str(timestamp),
+                                "price": str(bar.close),
+                                "signal": f"DD减仓:{current_dd:.1%}",
+                                "nesting_depth": 0,
+                                "aligned": True,
+                            })
 
             # 2. Sell signal exits — relaxed: depth >= 1, skip risk gate
             #    Mirrors DecisionAgent: sell signals bypass risk manager

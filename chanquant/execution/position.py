@@ -223,13 +223,28 @@ class StopLossManager:
 
 def check_portfolio_drawdown(
     drawdown: Decimal,
+    max_drawdown_pct: Decimal | None = None,
 ) -> str | None:
-    """Check portfolio-level drawdown thresholds (v2.2 three tiers).
+    """Check portfolio-level drawdown thresholds.
+
+    If max_drawdown_pct is provided (from user's RiskParams), uses it as the
+    hard limit. Otherwise falls back to default three tiers (10/15/20%).
 
     Returns action to take: 'half_all', 'clear_all', 'suspend', or None.
     """
+    if max_drawdown_pct is not None and max_drawdown_pct > Decimal("0"):
+        # User-configured drawdown limits:
+        # >= max → clear_all (hard stop, liquidate everything)
+        # >= max * 0.7 → half_all (warning, reduce exposure)
+        if drawdown >= max_drawdown_pct:
+            return "clear_all"
+        if drawdown >= max_drawdown_pct * Decimal("0.7"):
+            return "half_all"
+        return None
+
+    # Default tiers (no user config)
     if drawdown >= _DRAWDOWN_SUSPEND:
-        return "suspend"  # full clear + suspend trading until month-end
+        return "suspend"
     if drawdown >= _DRAWDOWN_CLEAR:
         return "clear_all"
     if drawdown >= _DRAWDOWN_HALF:

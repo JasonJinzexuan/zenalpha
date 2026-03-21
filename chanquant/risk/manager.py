@@ -66,7 +66,7 @@ class RiskManager:
                 )
 
         # 2. Drawdown check — protect capital
-        dd_action = check_portfolio_drawdown(current_drawdown)
+        dd_action = check_portfolio_drawdown(current_drawdown, params.max_drawdown_pct)
         if dd_action == "suspend":
             return RiskCheckResult(
                 approved=False,

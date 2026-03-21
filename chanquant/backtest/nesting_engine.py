@@ -156,21 +156,20 @@ class NestingBacktestEngine:
 
         for timestamp, bars in timeline:
             snapshot = replace(snapshot, timestamp=timestamp)
+            current_prices = {inst: bar.close for inst, bar in bars.items()}
 
-            # 1. Stop losses (hard stop + trailing stop)
-            snapshot = self._check_stops(snapshot, bars)
+            # ── 0. UPDATE EQUITY FIRST with current bar prices ──
+            # This MUST happen before any exit checks so drawdown/stops
+            # see the real current P&L, not stale data from last bar.
+            snapshot = self._portfolio.update_equity(snapshot, current_prices)
 
-            # 1.5 Portfolio-level drawdown circuit breaker
+            # ── 1. Portfolio-level drawdown circuit breaker ──
             if snapshot.positions:
-                current_dd = (
-                    (snapshot.peak_equity - snapshot.equity) / snapshot.peak_equity
-                    if snapshot.peak_equity > _ZERO else _ZERO
-                )
+                current_dd = snapshot.drawdown
                 dd_action = check_portfolio_drawdown(
                     current_dd, self._risk_params.max_drawdown_pct,
                 )
                 if dd_action in ("clear_all", "suspend"):
-                    # Force-close ALL positions
                     for pos in list(snapshot.positions):
                         bar = bars.get(pos.instrument)
                         if bar is not None:
@@ -188,15 +187,13 @@ class NestingBacktestEngine:
                                 "aligned": True,
                             })
                 elif dd_action == "half_all":
-                    # Close half of positions (worst performers first)
                     positions_by_pnl = sorted(
                         snapshot.positions,
-                        key=lambda p: (
-                            bars.get(p.instrument, p).close - p.entry_price  # type: ignore
-                            if p.instrument in bars else _ZERO
-                        ),
+                        key=lambda p: current_prices.get(
+                            p.instrument, p.entry_price,
+                        ) - p.entry_price,
                     )
-                    to_close = len(positions_by_pnl) // 2
+                    to_close = max(1, len(positions_by_pnl) // 2)
                     for pos in positions_by_pnl[:to_close]:
                         bar = bars.get(pos.instrument)
                         if bar is not None:
@@ -214,8 +211,10 @@ class NestingBacktestEngine:
                                 "aligned": True,
                             })
 
-            # 2. Sell signal exits — relaxed: depth >= 1, skip risk gate
-            #    Mirrors DecisionAgent: sell signals bypass risk manager
+            # ── 2. Stop losses (hard stop + trailing stop) ──
+            snapshot = self._check_stops(snapshot, bars)
+
+            # ── 3. Sell signal exits — single-TF S signal enough ──
             for inst in bars:
                 if not any(p.instrument == inst for p in snapshot.positions):
                     continue
@@ -241,7 +240,7 @@ class NestingBacktestEngine:
                         "aligned": True,
                     })
 
-            # 3. Buy signal entries — strict: nesting + alignment + confidence + risk gate
+            # ── 4. Buy signal entries — strict: nesting + risk gate ──
             for inst in bars:
                 nested = self._find_nested_signals(
                     all_signals.get(inst, {}), timestamp
@@ -332,9 +331,8 @@ class NestingBacktestEngine:
                         "precise": precise_sig.signal_type.value if precise_sig else None,
                     })
 
-            # Update equity
-            prices = {inst: bar.close for inst, bar in bars.items()}
-            snapshot = self._portfolio.update_equity(snapshot, prices)
+            # Final equity update after all trades this bar
+            snapshot = self._portfolio.update_equity(snapshot, current_prices)
             snapshots.append(snapshot)
 
         # Force-close all remaining positions at last bar price
@@ -359,25 +357,46 @@ class NestingBacktestEngine:
         all_trades = snapshots[-1].trades
         metrics = calculate_metrics(snapshots, all_trades)
 
-        # Decision-dimension stats (mirrors DecisionAgent logic)
-        # Group by: nesting depth + alignment status
+        # Stats grouped by: entry dimension + exit reason
         decision_stats: dict[str, dict] = {}
-        # Index closed trades by instrument+timestamp for P&L matching
+
+        # Group closed trades by exit reason
+        for trade in all_trades:
+            reason = trade.exit_reason or "unknown"
+            # Simplify reason labels
+            if reason.startswith("signal_"):
+                reason = "卖出信号"
+            elif reason == "stop_loss":
+                reason = "止损"
+            elif reason == "trailing_stop":
+                reason = "追踪止损"
+            elif reason.startswith("drawdown"):
+                reason = "回撤熔断"
+            elif reason == "backtest_end":
+                reason = "回测结束"
+
+            if reason not in decision_stats:
+                decision_stats[reason] = {"trades": 0, "wins": 0, "total_pnl": _ZERO}
+            decision_stats[reason]["trades"] += 1
+            if trade.pnl > _ZERO:
+                decision_stats[reason]["wins"] += 1
+            decision_stats[reason]["total_pnl"] += trade.pnl
+
+        # Also add entry dimension stats
         closed_by_inst: dict[str, list] = {}
         for trade in all_trades:
             closed_by_inst.setdefault(trade.instrument, []).append(trade)
 
         for entry in trade_log:
             if entry["action"] != "BUY":
-                continue  # only count entry decisions
+                continue
             depth = entry.get("nesting_depth", 0)
             aligned = entry.get("aligned", False)
-            category = f"{depth}层嵌套{'✓对齐' if aligned else '✗不齐'}"
+            category = f"入场:{depth}层嵌套{'✓对齐' if aligned else '✗不齐'}"
             if category not in decision_stats:
                 decision_stats[category] = {"trades": 0, "wins": 0, "total_pnl": _ZERO}
             decision_stats[category]["trades"] += 1
 
-            # Find matching closed trade for this instrument
             inst = entry["instrument"]
             if inst in closed_by_inst and closed_by_inst[inst]:
                 closed = closed_by_inst[inst].pop(0)

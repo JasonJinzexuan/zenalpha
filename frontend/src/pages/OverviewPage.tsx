@@ -23,10 +23,26 @@ interface InstrumentRow {
 
 function deriveWalkState(item: AnalysisResult): WalkState {
   if (item.trend?.walk_state) return item.trend.walk_state
-  if (item.center_count >= 2 && item.divergence_count > 0) return 'top_divergence'
-  if (item.center_count >= 2) return 'up_trend'
-  if (item.center_count === 1) return 'consolidation'
-  return 'up_trend'
+
+  // Use trend classification if available
+  const cls = item.trend?.classification
+  if (cls === 'up_trend') {
+    if (item.divergence_count > 0) return 'top_divergence'
+    return 'up_trend'
+  }
+  if (cls === 'down_trend') {
+    if (item.divergence_count > 0) return 'bottom_divergence'
+    return 'down_trend'
+  }
+
+  // Fallback: infer from structure
+  if (item.center_count >= 2 && item.divergence_count > 0) {
+    // Check if sell signals present → top divergence, else bottom
+    const hasSell = item.signals.some(s => getSignalType(s).startsWith('S'))
+    return hasSell ? 'top_divergence' : 'bottom_divergence'
+  }
+  if (item.center_count >= 1) return 'consolidation'
+  return 'consolidation'
 }
 
 function getStatus(signals: Signal[]): StatusLevel {
@@ -365,9 +381,12 @@ function DecisionRow({ decision: d, onNavigate }: { decision: DecisionRecord; on
             {isBuy ? '买入' : '卖出'}
           </span>
           <span className="text-sm font-bold text-text-primary">{d.instrument}</span>
+          {d.signal_basis && (
+            <span className="text-[10px] text-text-dim">{d.signal_basis}</span>
+          )}
           {d.price_range_low && d.price_range_high && (
             <span className="text-[10px] text-text-dim">
-              价格区间 {d.price_range_low} — {d.price_range_high}
+              {d.price_range_low} — {d.price_range_high}
             </span>
           )}
           {d.urgency && (

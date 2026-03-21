@@ -5,6 +5,7 @@ Generates B1/S1, B2/S2, B3/S3 buy/sell signals from trend, divergence, and cente
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from typing import Sequence
 
@@ -73,25 +74,6 @@ def _generate_b1_s1(
 # ── B2/S2: Second Buy/Sell Point ────────────────────────────────────────────
 
 
-def _check_no_new_low(
-    segments: Sequence[Segment], reference_low: Decimal
-) -> bool:
-    """After B1, check if price makes no new low."""
-    if not segments:
-        return False
-    recent = segments[-1]
-    return recent.low >= reference_low
-
-
-def _check_no_new_high(
-    segments: Sequence[Segment], reference_high: Decimal
-) -> bool:
-    """After S1, check if price makes no new high."""
-    if not segments:
-        return False
-    recent = segments[-1]
-    return recent.high <= reference_high
-
 
 def _check_small_to_large(
     seg: Segment, center: Center | None
@@ -107,6 +89,22 @@ def _check_small_to_large(
     return False
 
 
+def _find_first_pullback_after(
+    segments: Sequence[Segment],
+    after_time: "datetime",
+    direction: Direction,
+) -> Segment | None:
+    """Find the first pullback segment after a given time.
+
+    For B2 (after B1 in downtrend): first DOWN segment after B1 timestamp.
+    For S2 (after S1 in uptrend): first UP segment after S1 timestamp.
+    """
+    for seg in segments:
+        if seg.start_time and seg.start_time > after_time and seg.direction == direction:
+            return seg
+    return None
+
+
 def _generate_b2_s2(
     trend: TrendType,
     divergence: Divergence | None,
@@ -115,46 +113,44 @@ def _generate_b2_s2(
     prior_signals: list[Signal],
     instrument: str,
 ) -> list[Signal]:
-    """B2/S2: no new low after B1, OR consolidation divergence, OR small-to-large."""
+    """B2/S2: first pullback after B1 with no new low, OR consolidation divergence, OR small-to-large."""
     signals: list[Signal] = []
 
     # Find prior B1/S1
     b1_signals = [s for s in prior_signals if s.signal_type == SignalType.B1]
     s1_signals = [s for s in prior_signals if s.signal_type == SignalType.S1]
 
-    # B2 after B1
+    # B2: first DOWN pullback after B1 that doesn't make new low
     for b1 in b1_signals:
-        if _check_no_new_low(segments, b1.price):
-            seg = segments[-1] if segments else None
-            if seg and seg.end_time:
-                signals.append(Signal(
-                    signal_type=SignalType.B2,
-                    level=trend.level,
-                    instrument=instrument,
-                    timestamp=seg.end_time,
-                    price=seg.low,
-                    divergence=divergence,
-                    strength=Decimal("0.7"),
-                    source_lesson="L7.2",
-                    reasoning="B1后不创新低，产生第二类买点",
-                ))
+        pullback = _find_first_pullback_after(segments, b1.timestamp, Direction.DOWN)
+        if pullback and pullback.end_time and pullback.low >= b1.price:
+            signals.append(Signal(
+                signal_type=SignalType.B2,
+                level=trend.level,
+                instrument=instrument,
+                timestamp=pullback.end_time,
+                price=pullback.low,
+                divergence=divergence,
+                strength=Decimal("0.7"),
+                source_lesson="L7.2",
+                reasoning="B1后首次回调不创新低，产生第二类买点",
+            ))
 
-    # S2 after S1
+    # S2: first UP pullback after S1 that doesn't make new high
     for s1 in s1_signals:
-        if _check_no_new_high(segments, s1.price):
-            seg = segments[-1] if segments else None
-            if seg and seg.end_time:
-                signals.append(Signal(
-                    signal_type=SignalType.S2,
-                    level=trend.level,
-                    instrument=instrument,
-                    timestamp=seg.end_time,
-                    price=seg.high,
-                    divergence=divergence,
-                    strength=Decimal("0.7"),
-                    source_lesson="L7.2",
-                    reasoning="S1后不创新高，产生第二类卖点",
-                ))
+        pullback = _find_first_pullback_after(segments, s1.timestamp, Direction.UP)
+        if pullback and pullback.end_time and pullback.high <= s1.price:
+            signals.append(Signal(
+                signal_type=SignalType.S2,
+                level=trend.level,
+                instrument=instrument,
+                timestamp=pullback.end_time,
+                price=pullback.high,
+                divergence=divergence,
+                strength=Decimal("0.7"),
+                source_lesson="L7.2",
+                reasoning="S1后首次回调不创新高，产生第二类卖点",
+            ))
 
     # Consolidation divergence
     if divergence and divergence.type == DivergenceType.CONSOLIDATION:
@@ -212,62 +208,77 @@ def _generate_b2_s2(
 
 def _generate_b3_s3(
     centers: Sequence[Center],
-    strokes: Sequence[Stroke],
+    segments: Sequence[Segment],
     instrument: str,
     level: TrendType,
 ) -> list[Signal]:
-    """B3/S3: break above ZG then pullback stays above ZG (first pullback only)."""
+    """B3/S3: segment breaks above ZG / below ZD, next segment pullback stays outside.
+
+    Checks ALL centers (not just the last one), uses segments (not strokes)
+    per Chan Theory: third buy/sell points are segment-level breakouts.
+    Only generates one B3 and one S3 per center (first breakout only).
+    """
     signals: list[Signal] = []
 
-    if not centers or len(strokes) < 2:
+    if not centers or len(segments) < 2:
         return signals
 
-    center = centers[-1]
+    # Track which centers already have a B3 or S3 to enforce "first breakout only"
+    b3_centers: set[int] = set()
+    s3_centers: set[int] = set()
 
-    # Check strokes for center breakout + pullback pattern
-    for i in range(len(strokes) - 1):
-        curr = strokes[i]
-        nxt = strokes[i + 1]
+    for center_idx, center in enumerate(centers):
+        for i in range(len(segments) - 1):
+            curr = segments[i]
+            nxt = segments[i + 1]
 
-        # B3: break above ZG, then pullback low stays above ZG
-        if (
-            curr.direction == Direction.UP
-            and curr.high > center.zg
-            and nxt.direction == Direction.DOWN
-            and nxt.low >= center.zg
-            and nxt.end_time
-        ):
-            signals.append(Signal(
-                signal_type=SignalType.B3,
-                level=level.level,
-                instrument=instrument,
-                timestamp=nxt.end_time,
-                price=nxt.low,
-                center=center,
-                strength=Decimal("0.5"),
-                source_lesson="L7.3",
-                reasoning="突破中枢上沿后回踩不破，产生第三类买点",
-            ))
+            # Only consider segments that start after the center formed
+            if curr.start_time and center.end_time and curr.start_time < center.end_time:
+                continue
 
-        # S3: break below ZD, then pullback high stays below ZD
-        if (
-            curr.direction == Direction.DOWN
-            and curr.low < center.zd
-            and nxt.direction == Direction.UP
-            and nxt.high <= center.zd
-            and nxt.end_time
-        ):
-            signals.append(Signal(
-                signal_type=SignalType.S3,
-                level=level.level,
-                instrument=instrument,
-                timestamp=nxt.end_time,
-                price=nxt.high,
-                center=center,
-                strength=Decimal("0.5"),
-                source_lesson="L7.3",
-                reasoning="跌破中枢下沿后反弹不回，产生第三类卖点",
-            ))
+            # B3: break above ZG, then pullback low stays strictly above ZG
+            if (
+                center_idx not in b3_centers
+                and curr.direction == Direction.UP
+                and curr.high > center.zg
+                and nxt.direction == Direction.DOWN
+                and nxt.low > center.zg
+                and nxt.end_time
+            ):
+                signals.append(Signal(
+                    signal_type=SignalType.B3,
+                    level=level.level,
+                    instrument=instrument,
+                    timestamp=nxt.end_time,
+                    price=nxt.low,
+                    center=center,
+                    strength=Decimal("0.5"),
+                    source_lesson="L7.3",
+                    reasoning="突破中枢上沿后回踩不破，产生第三类买点",
+                ))
+                b3_centers.add(center_idx)
+
+            # S3: break below ZD, then pullback high stays strictly below ZD
+            if (
+                center_idx not in s3_centers
+                and curr.direction == Direction.DOWN
+                and curr.low < center.zd
+                and nxt.direction == Direction.UP
+                and nxt.high < center.zd
+                and nxt.end_time
+            ):
+                signals.append(Signal(
+                    signal_type=SignalType.S3,
+                    level=level.level,
+                    instrument=instrument,
+                    timestamp=nxt.end_time,
+                    price=nxt.high,
+                    center=center,
+                    strength=Decimal("0.5"),
+                    source_lesson="L7.3",
+                    reasoning="跌破中枢下沿后反弹不回，产生第三类卖点",
+                ))
+                s3_centers.add(center_idx)
 
     return signals
 
@@ -301,9 +312,9 @@ class SignalGenerator:
             )
         )
 
-        # B3/S3: third buy/sell
+        # B3/S3: third buy/sell (segment-level, all centers)
         signals.extend(
-            _generate_b3_s3(centers, strokes, instrument, trend)
+            _generate_b3_s3(centers, segments, instrument, trend)
         )
 
         return signals

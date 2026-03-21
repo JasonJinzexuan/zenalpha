@@ -135,9 +135,9 @@ class StrokeBuilder:
             else:
                 if fractal.extreme_value < self._start_fractal.extreme_value:
                     self._start_fractal = fractal
-        else:
-            # Opposite type but doesn't meet rules — try as new start
-            # Keep the more favorable one
-            self._start_fractal = fractal
+        # else: opposite type but doesn't meet stroke rules (too close or
+        # wrong direction). Per Chan Theory, keep the current start fractal
+        # and wait for a valid opposite-type fractal that meets the rules.
+        # Do NOT replace the start — that discards a potentially valid stroke.
 
         return None

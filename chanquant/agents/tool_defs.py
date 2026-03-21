@@ -337,12 +337,23 @@ def _check_alignment(large: dict, small: dict) -> dict[str, Any]:
     }
 
 
+_TF_LIMITS: dict[str, int] = {
+    "1w": 500,
+    "1d": 500,
+    "1h": 2000,
+    "30m": 2000,
+    "15m": 3000,
+    "5m": 3000,
+}
+
+
 def _get_market_summary_tool(instrument: str) -> dict[str, Any]:
     """Get multi-timeframe summary for an instrument."""
     summary: dict[str, Any] = {"instrument": instrument, "timeframes": {}}
 
     for tf_str in ["1w", "1d", "30m", "5m"]:
-        result = _run_pipeline_tool(instrument, tf_str)
+        limit = _TF_LIMITS.get(tf_str, 500)
+        result = _run_pipeline_tool(instrument, tf_str, limit)
         summary["timeframes"][tf_str] = {
             "bar_count": result.get("bar_count", 0),
             "trend": result.get("trend"),

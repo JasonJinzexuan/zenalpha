@@ -24,10 +24,19 @@ from chanquant.core.nesting import IntervalNester
 from chanquant.core.objects import Signal, SignalType, TimeFrame
 
 
+class _PerLevelInfo(BaseModel):
+    """Per-timeframe direction info."""
+    trend: Optional[str] = None
+    direction: Optional[str] = None
+    signal: Optional[str] = None
+    has_structure: bool = False
+
+
 class _NestingLLMResponse(BaseModel):
     """Schema for validating LLM nesting analysis JSON output."""
     instrument: str = ""
     nesting_path: list[str] = Field(default_factory=list)
+    per_level: dict[str, _PerLevelInfo] = Field(default_factory=dict)
     target_level: str = ""
     large_signal: Optional[str] = None
     medium_signal: Optional[str] = None
@@ -35,59 +44,65 @@ class _NestingLLMResponse(BaseModel):
     nesting_depth: int = Field(default=0, ge=0, le=10)
     direction_aligned: bool = False
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    actionable: bool = False
+    status: str = ""
     risk_assessment: str = ""
     reasoning: str = ""
 
 
 _NESTING_SYSTEM_PROMPT = """\
-You are the Nesting Agent (区间套分析Agent). You perform multi-timeframe interval nesting \
-to precisely locate entry/exit points using Chan Theory (缠论).
+你是区间套分析Agent。使用缠论多级别区间套定位精确买卖点。
 
-## Your Tools
+## 工具
+- **run_pipeline**: 运行缠论L0-L7分析管道（含趋势、中枢、背驰、信号）
+- **compare_divergence**: 比较两个级别的背驰状态
+- **get_market_summary**: 获取全级别概览（1w/1d/30m/5m）
 
-You have access to these tools:
-- **run_pipeline**: Run the deterministic Chan Theory L0-L7 pipeline on a specific \
-instrument and timeframe. Returns trend, centers, divergences, and signals.
-- **compare_divergence**: Compare divergence status between two timeframes.
-- **get_market_summary**: Get a quick overview across all timeframes (1w/1d/30m/5m).
+## 分析流程
 
-## Multi-Timeframe Nesting Process
+### 第一步：全局概览
+调用 `get_market_summary` 获取所有级别状态。
 
-### Step 1: Get the big picture
-Call `get_market_summary` for the instrument to see all timeframes at once.
+### 第二步：从大到小分析
+- 周线(1w): 总体方向和趋势阶段
+- 日线(1d): 周线趋势中的当前位置，寻找信号
+- 30分钟(30m): 日线走势中的精确位置（若无结构则使用15m或1h）
+- 5分钟(5m): 执行时机
 
-### Step 2: Analyze from large to small
-- Weekly (1w): Overall direction and trend stage
-- Daily (1d): Current position within weekly trend, look for signals
-- 30-minute (30m): Precision within daily move
-- 5-minute (5m): Execution timing
+### 第三步：对齐检查
+- 所有级别均为买入信号 → 强买入，高置信度
+- 大级别买+小级别卖 → 等待，不操作
+- 大级别卖+小级别买 → 禁止操作（规则8.5否决）
 
-### Step 3: Alignment check
-- All timeframes showing buy signals → STRONG BUY, high confidence
-- Large=buy + small=sell → Wait, don't trade
-- Large=sell + small=buy → DO NOT TRADE (veto per rule 8.5)
+### 第四步：硬规则
+- 嵌套深度 < 2 → actionable=false，status="观察中"
+- 嵌套深度 ≥ 2 且方向一致 → 可操作
 
-### Step 4: Synthesize
-Produce your final nesting analysis with:
-- Direction alignment across timeframes
-- Precise entry signal (from smallest timeframe with a signal)
-- Confidence based on alignment depth
-- Risk assessment
+### 第五步：综合输出
+**所有文字输出必须使用中文**，结构化为：结论→依据→风险
 
-## Output Format (final response after tool use)
+## 输出格式 (工具调用完成后的最终JSON)
 ```json
 {
   "instrument": "...",
-  "nesting_path": ["1w:UP_TREND", "1d:B3", "30m:CONSOLIDATION", "5m:no_signal"],
+  "nesting_path": ["1w:up_trend", "1d:down_trend:S2", "30m:consolidation", "5m:no_data"],
+  "per_level": {
+    "1w": {"trend": "up_trend", "direction": "多", "signal": null, "has_structure": true},
+    "1d": {"trend": "down_trend", "direction": "空", "signal": "S2", "has_structure": true},
+    "30m": {"trend": null, "direction": null, "signal": null, "has_structure": false},
+    "5m": {"trend": null, "direction": null, "signal": null, "has_structure": false}
+  },
   "target_level": "1d",
-  "large_signal": "B3" or null,
+  "large_signal": "S2",
   "medium_signal": null,
   "precise_signal": null,
   "nesting_depth": 1,
-  "direction_aligned": true,
-  "confidence": 0.7,
-  "risk_assessment": "...",
-  "reasoning": "step-by-step nesting logic"
+  "direction_aligned": false,
+  "confidence": 0.3,
+  "actionable": false,
+  "status": "观察中 — 仅单级别确认，不建议操作",
+  "risk_assessment": "仅日线有信号，30m/5m无结构确认，操作风险较高",
+  "reasoning": "结论：当前不建议操作\\n依据：周线上升趋势中，日线出现S2卖点但仅单级别确认\\n风险：30分钟级别无有效结构，无法精确定位"
 }
 ```
 """
@@ -197,26 +212,72 @@ class NesterAgent:
         except Exception:
             return self._deterministic_nesting(instrument, signals)
 
+    # Per-TF kline limits — small TFs need more bars to build structure
+    _TF_LIMITS: dict[str, int] = {
+        "1w": 500, "1d": 500, "1h": 2000,
+        "30m": 2000, "15m": 3000, "5m": 3000,
+    }
+
     def _deterministic_multi_tf(self, instrument: str) -> dict[str, Any] | None:
         """Deterministic multi-TF analysis: run pipeline for each TF, synthesize."""
         results: dict[str, dict] = {}
-        for tf_str in ["1w", "1d", "30m", "5m"]:
+        primary_tfs = ["1w", "1d", "30m", "5m"]
+
+        for tf_str in primary_tfs:
+            limit = self._TF_LIMITS.get(tf_str, 500)
             result = execute_tool("run_pipeline", {
-                "instrument": instrument, "timeframe": tf_str
+                "instrument": instrument, "timeframe": tf_str, "limit": limit,
             })
             if not result.get("error"):
                 results[tf_str] = result
 
+        # Fallback: if 30m has no structure, try 15m then 1h
+        r30 = results.get("30m", {})
+        if r30.get("segment_count", 0) == 0 and r30.get("center_count", 0) == 0:
+            for fallback_tf in ["15m", "1h"]:
+                limit = self._TF_LIMITS.get(fallback_tf, 2000)
+                fb_result = execute_tool("run_pipeline", {
+                    "instrument": instrument, "timeframe": fallback_tf, "limit": limit,
+                })
+                if not fb_result.get("error") and (
+                    fb_result.get("segment_count", 0) > 0
+                    or fb_result.get("center_count", 0) > 0
+                ):
+                    results[fallback_tf] = fb_result
+                    # Replace 30m in the chain
+                    if "30m" in results:
+                        del results["30m"]
+                    primary_tfs = ["1w", "1d", fallback_tf, "5m"]
+                    break
+
         if not results:
             return None
 
-        # Find signals across timeframes
+        # Build per-level direction info and nesting path
         nesting_path = []
+        per_level_direction: dict[str, dict] = {}
         all_signals: dict[str, list[dict]] = {}
-        for tf_str, result in results.items():
+
+        for tf_str in primary_tfs:
+            result = results.get(tf_str)
+            if not result:
+                nesting_path.append(f"{tf_str}:no_data")
+                per_level_direction[tf_str] = {
+                    "trend": None, "direction": None,
+                    "signal": None, "has_structure": False,
+                }
+                continue
+
             trend = result.get("trend", {})
             trend_cls = trend.get("classification", "unknown") if trend else "no_data"
             sigs = result.get("signals", [])
+
+            # Sort signals by timestamp descending to find the most recent
+            sigs_sorted = sorted(
+                sigs,
+                key=lambda s: s.get("timestamp", ""),
+                reverse=True,
+            )
             sig_types = [s["signal_type"] for s in sigs]
 
             path_entry = f"{tf_str}:{trend_cls}"
@@ -224,39 +285,55 @@ class NesterAgent:
                 path_entry += f":{','.join(sig_types)}"
             nesting_path.append(path_entry)
 
-            if sigs:
-                all_signals[tf_str] = sigs
+            # Per-level direction: use trend first, then MOST RECENT signal
+            direction = None
+            if trend_cls in ("up_trend",):
+                direction = "多"
+            elif trend_cls in ("down_trend",):
+                direction = "空"
+            elif sigs_sorted:
+                latest = sigs_sorted[0]
+                direction = "多" if latest["signal_type"] in ("B1", "B2", "B3") else "空"
 
-        # Find largest and smallest TF with signals
-        level_order = ["1w", "1d", "30m", "5m"]
-        large_sig = None
-        medium_sig = None
-        precise_sig = None
-        found_levels: list[str] = []
+            latest_sig_type = sigs_sorted[0]["signal_type"] if sigs_sorted else None
 
-        for lvl in level_order:
-            if lvl in all_signals and all_signals[lvl]:
-                found_levels.append(lvl)
+            has_structure = (
+                result.get("segment_count", 0) > 0
+                or result.get("center_count", 0) > 0
+            )
+            per_level_direction[tf_str] = {
+                "trend": trend_cls,
+                "direction": direction,
+                "signal": latest_sig_type,
+                "has_structure": has_structure,
+            }
+
+            if sigs_sorted:
+                all_signals[tf_str] = sigs_sorted
+
+        # Find levels with signals
+        found_levels: list[str] = [
+            lvl for lvl in primary_tfs if lvl in all_signals and all_signals[lvl]
+        ]
 
         if not found_levels:
             return {
                 "instrument": instrument,
                 "nesting_path": nesting_path,
+                "per_level": per_level_direction,
                 "target_level": "1d",
-                "large_signal": None,
-                "medium_signal": None,
-                "precise_signal": None,
+                "large_signal": None, "medium_signal": None, "precise_signal": None,
                 "nesting_depth": 0,
                 "direction_aligned": False,
                 "confidence": "0",
+                "actionable": False,
+                "status": "观察中 — 无活跃信号",
                 "confidence_source": "deterministic_multi_tf",
             }
 
-        large_sig = all_signals[found_levels[0]][-1] if found_levels else None
-        if len(found_levels) >= 2:
-            medium_sig = all_signals[found_levels[1]][-1]
-        if len(found_levels) >= 3:
-            precise_sig = all_signals[found_levels[2]][-1]
+        large_sig = all_signals[found_levels[0]][0]  # most recent (sorted desc)
+        medium_sig = all_signals[found_levels[1]][0] if len(found_levels) >= 2 else None
+        precise_sig = all_signals[found_levels[2]][0] if len(found_levels) >= 3 else None
 
         def is_buy(s: dict) -> bool:
             return s.get("signal_type", "") in ("B1", "B2", "B3")
@@ -270,16 +347,31 @@ class NesterAgent:
         depth = len(found_levels)
         confidence = min(1.0, depth * 0.3 + (0.2 if aligned else 0))
 
+        # Hard rule: depth < 2 → observation only
+        actionable = depth >= 2 and confidence >= 0.4
+        if depth < 2:
+            status = "观察中 — 仅单级别确认，不建议操作"
+        elif not aligned:
+            status = "观察中 — 多级别方向不一致"
+        elif confidence < 0.4:
+            status = "观察中 — 置信度不足"
+        else:
+            direction_word = "做多" if is_buy(large_sig) else "做空"
+            status = f"可操作 — {depth}层确认{direction_word}"
+
         return {
             "instrument": instrument,
             "nesting_path": nesting_path,
+            "per_level": per_level_direction,
             "target_level": found_levels[-1],
-            "large_signal": large_sig["signal_type"] if large_sig else None,
+            "large_signal": large_sig["signal_type"],
             "medium_signal": medium_sig["signal_type"] if medium_sig else None,
             "precise_signal": precise_sig["signal_type"] if precise_sig else None,
             "nesting_depth": depth,
             "direction_aligned": aligned,
             "confidence": str(confidence),
+            "actionable": actionable,
+            "status": status,
             "confidence_source": "deterministic_multi_tf",
         }
 
@@ -313,7 +405,19 @@ class NesterAgent:
             aligned = False
 
         depth = len(found_levels)
-        confidence = str(min(1.0, depth * 0.3 + (0.2 if aligned else 0)))
+        confidence = min(1.0, depth * 0.3 + (0.2 if aligned else 0))
+
+        # Hard rule: depth < 2 → observation only
+        actionable = depth >= 2 and confidence >= 0.4
+        if depth < 2:
+            status = "观察中 — 仅单级别确认，不建议操作"
+        elif not aligned:
+            status = "观察中 — 多级别方向不一致"
+        elif confidence < 0.4:
+            status = "观察中 — 置信度不足"
+        else:
+            direction_word = "做多" if is_buy(large_sig) else "做空"
+            status = f"可操作 — {depth}层确认{direction_word}"
 
         return {
             "instrument": instrument,
@@ -323,7 +427,9 @@ class NesterAgent:
             "precise_signal": precise_sig["signal_type"] if precise_sig else None,
             "nesting_depth": depth,
             "direction_aligned": aligned,
-            "confidence": confidence,
+            "confidence": str(confidence),
+            "actionable": actionable,
+            "status": status,
             "confidence_source": "deterministic_fallback",
         }
 
@@ -341,6 +447,12 @@ class NesterAgent:
             data = validated.model_dump()
             data["instrument"] = instrument
             data["confidence"] = str(data["confidence"])
+            # Convert _PerLevelInfo objects to plain dicts
+            if data.get("per_level"):
+                data["per_level"] = {
+                    k: v if isinstance(v, dict) else v
+                    for k, v in data["per_level"].items()
+                }
             return data
         except (json.JSONDecodeError, ValidationError, ValueError):
             return None

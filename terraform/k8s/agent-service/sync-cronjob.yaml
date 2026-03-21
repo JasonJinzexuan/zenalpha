@@ -27,12 +27,13 @@ spec:
 
                   echo "=== Market Sync $(date -u) ==="
 
-                  # 1. Sync daily/weekly only (intraday handled by WS streamer)
-                  echo "--- Syncing daily + weekly ---"
+                  # 1. Sync all timeframes (WS streamer handles real-time, but
+                  #    REST sync ensures no gaps from pod restarts)
+                  echo "--- Syncing all timeframes ---"
                   curl -sf -X POST "$AGENT/ingest/sync" \
                     -H 'Content-Type: application/json' \
-                    -d '{"levels": ["1d", "1w"]}' \
-                    --max-time 120 || echo "WARN: sync failed"
+                    -d '{"levels": ["5m", "30m", "1h", "1d", "1w"]}' \
+                    --max-time 300 || echo "WARN: sync failed"
 
                   echo ""
 

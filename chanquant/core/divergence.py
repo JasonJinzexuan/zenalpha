@@ -144,15 +144,45 @@ def _segment_c_contains_b3(seg_c: Segment, center_b: Center | None) -> bool:
 # ── Trend Divergence ────────────────────────────────────────────────────────
 
 
+def _find_last_same_direction_pair(
+    segments: Sequence[Segment],
+    trend: TrendType,
+) -> tuple[Segment, Segment] | None:
+    """Find the last two same-direction segments for divergence comparison.
+
+    For UP_TREND, find the last two UP segments.
+    For DOWN_TREND, find the last two DOWN segments.
+    Fallback when classic a-A-b-B-c structure is unavailable.
+    """
+    from chanquant.core.objects import Direction
+
+    target_dir = Direction.UP if trend.classification == TrendClass.UP_TREND else Direction.DOWN
+    same_dir = [s for s in segments if s.direction == target_dir]
+    if len(same_dir) >= 2:
+        return same_dir[-2], same_dir[-1]
+    return None
+
+
 def _detect_trend_divergence(
     trend: TrendType,
     macd_values: Sequence[MACDValue],
+    segments: Sequence[Segment] = (),
 ) -> Divergence | None:
-    """Detect trend divergence by comparing a vs c MACD areas."""
+    """Detect trend divergence by comparing a vs c MACD areas.
+
+    First tries the classic a-A-b-B-c structure. Falls back to comparing
+    the last two same-direction segments when the classic structure is
+    not available (common in real market data).
+    """
     seg_a = trend.segment_a
     seg_c = trend.segment_c
+
+    # Fallback: use last two same-direction segments
     if seg_a is None or seg_c is None:
-        return None
+        pair = _find_last_same_direction_pair(segments, trend)
+        if pair is None:
+            return None
+        seg_a, seg_c = pair
 
     a_area = _segment_macd_area(seg_a, macd_values)
     c_area = _segment_macd_area(seg_c, macd_values)
@@ -162,11 +192,6 @@ def _detect_trend_divergence(
     # Need at least 2 of 3 confirmations
     confirmations = _count_confirmations(a_area, c_area, a_dif, c_dif)
     if confirmations < 2:
-        return None
-
-    # MACD should return near zero at center B
-    near_zero = _macd_returns_near_zero(macd_values, trend.center_b)
-    if not near_zero:
         return None
 
     contains_b3 = _segment_c_contains_b3(seg_c, trend.center_b)
@@ -263,7 +288,7 @@ class DivergenceDetector:
     ) -> Divergence | None:
         """Detect divergence based on trend classification."""
         if trend.classification in (TrendClass.UP_TREND, TrendClass.DOWN_TREND):
-            div = _detect_trend_divergence(trend, macd_values)
+            div = _detect_trend_divergence(trend, macd_values, segments)
             if div is not None:
                 vol = _calc_volume_ratio(div.segment_a, div.segment_c)
                 if vol is not None:

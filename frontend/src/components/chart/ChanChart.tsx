@@ -24,9 +24,13 @@ interface ChanChartProps {
   showVolume?: boolean
   showMACD?: boolean
   defaultLayers?: OverlayLayer[]
+  /** Controlled layers — when provided, overrides internal state */
+  controlledLayers?: OverlayLayer[]
   onAnalysisComplete?: (result: AnalysisResult) => void
   className?: string
   compact?: boolean  // for nesting map thumbnails
+  /** Filter which signal types to show on chart (e.g. ['B1','B3','S2']) */
+  signalTypeFilter?: Set<string>
 }
 
 const C = {
@@ -66,6 +70,7 @@ export default function ChanChart({
   instrument, timeframe = '1d', limit = 500,
   height = 500, showVolume = true, showMACD = false,
   defaultLayers = ['strokes', 'segments', 'centers', 'signals'],
+  controlledLayers, signalTypeFilter,
   onAnalysisComplete, className = '', compact = false,
 }: ChanChartProps) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -76,13 +81,23 @@ export default function ChanChart({
   const [loading, setLoading] = useState(false)
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null)
   const [error, setError] = useState('')
-  const [layers, setLayers] = useState<Set<OverlayLayer>>(new Set(defaultLayers))
+  const [internalLayers, setInternalLayers] = useState<Set<OverlayLayer>>(new Set(defaultLayers))
   const [hoverInfo, setHoverInfo] = useState<string | null>(null)
   const overlaySeriesRef = useRef<ISeriesApi<any>[]>([])
   const klineDataRef = useRef<KLineData[]>([])
+  const markersPluginRef = useRef<{ setMarkers: (m: any[]) => void; detach: () => void } | null>(null)
+  const signalFilterRef = useRef(signalTypeFilter)
+  signalFilterRef.current = signalTypeFilter
+
+  // Use controlled layers when provided, otherwise internal state
+  const layers = controlledLayers ? new Set(controlledLayers) : internalLayers
+  // Stable string key for dependency tracking
+  const layersKey = Array.from(layers).sort().join(',')
+  const signalFilterKey = signalTypeFilter ? Array.from(signalTypeFilter).sort().join(',') : 'all'
 
   const toggleLayer = (layer: OverlayLayer) => {
-    setLayers(prev => {
+    if (controlledLayers) return // controlled mode — ignore internal toggle
+    setInternalLayers(prev => {
       const next = new Set(prev)
       if (next.has(layer)) next.delete(layer)
       else next.add(layer)
@@ -198,50 +213,48 @@ export default function ChanChart({
       overlaySeriesRef.current.push(segSeries)
     }
 
-    // SIGNALS — markers on candlestick
-    if (layers.has('signals') && result.signals?.length) {
-      const markers = result.signals.map(s => {
-        const type = getSignalType(s)
-        const buy = isBuySignal(s)
-        return {
-          time: toTime(s.timestamp),
-          position: buy ? 'belowBar' as const : 'aboveBar' as const,
-          color: buy ? C.buy : C.sell,
-          shape: buy ? 'arrowUp' as const : 'arrowDown' as const,
-          text: type,
-        }
-      }).sort((a, b) => (a.time as number) - (b.time as number))
-      try { createSeriesMarkers(candle, markers) } catch { /* ignore */ }
-    }
+    // MARKERS — combine signals + fractals in a single pass
+    {
+      const allMarkers: { time: Time; position: 'aboveBar' | 'belowBar'; color: string; shape: 'arrowUp' | 'arrowDown' | 'circle'; text: string }[] = []
 
-    // FRACTALS — markers
-    if (layers.has('fractals') && result.fractals?.length) {
-      // Use markers on candle series for fractals too
-      const fractalMarkers = result.fractals.map(f => ({
-        time: indexToTime(f.kline_index),
-        position: f.type === 'top' ? 'aboveBar' as const : 'belowBar' as const,
-        color: f.type === 'top' ? C.fractal_top : C.fractal_bottom,
-        shape: f.type === 'top' ? 'circle' as const : 'circle' as const,
-        text: f.type === 'top' ? '▽' : '△',
-      })).sort((a, b) => (a.time as number) - (b.time as number))
-      // Note: if signals already set markers, this will override. We combine.
+      // Signals (prominent arrows with label) — filtered by signalTypeFilter
       if (layers.has('signals') && result.signals?.length) {
-        const signalMarkers = result.signals.map(s => {
+        for (const s of result.signals) {
           const type = getSignalType(s)
+          const activeFilter = signalFilterRef.current
+          if (activeFilter && !activeFilter.has(type)) continue
           const buy = isBuySignal(s)
-          return {
+          allMarkers.push({
             time: toTime(s.timestamp),
-            position: buy ? 'belowBar' as const : 'aboveBar' as const,
+            position: buy ? 'belowBar' : 'aboveBar',
             color: buy ? C.buy : C.sell,
-            shape: buy ? 'arrowUp' as const : 'arrowDown' as const,
+            shape: buy ? 'arrowUp' : 'arrowDown',
             text: type,
-          }
-        })
-        const all = [...fractalMarkers, ...signalMarkers].sort((a, b) => (a.time as number) - (b.time as number))
-        try { createSeriesMarkers(candle, all) } catch { /* ignore */ }
-      } else {
-        try { createSeriesMarkers(candle, fractalMarkers) } catch { /* ignore */ }
+          })
+        }
       }
+
+      // Fractals (small dots, no text — to avoid clutter)
+      if (layers.has('fractals') && result.fractals?.length) {
+        for (const f of result.fractals) {
+          allMarkers.push({
+            time: indexToTime(f.kline_index),
+            position: f.type === 'top' ? 'aboveBar' : 'belowBar',
+            color: f.type === 'top' ? C.fractal_top : C.fractal_bottom,
+            shape: 'circle',
+            text: '',
+          })
+        }
+      }
+
+      allMarkers.sort((a, b) => (a.time as number) - (b.time as number))
+      try {
+        if (markersPluginRef.current) {
+          markersPluginRef.current.setMarkers(allMarkers)
+        } else {
+          markersPluginRef.current = createSeriesMarkers(candle, allMarkers)
+        }
+      } catch { /* ignore */ }
     }
 
     // CENTERS — horizontal lines for ZG/ZD boundaries
@@ -287,7 +300,7 @@ export default function ChanChart({
     if (showMACD && macdChartRef.current && result.macd_values?.length) {
       drawMACDChart(result, klines)
     }
-  }, [layers, showVolume, showMACD, indexToTime])
+  }, [layersKey, signalFilterKey, signalTypeFilter, showVolume, showMACD, indexToTime])
 
   const drawMACDChart = (result: AnalysisResult, klines: KLineData[]) => {
     const macdChart = macdChartRef.current
@@ -393,12 +406,13 @@ export default function ChanChart({
     }
   }, [instrument, timeframe, limit, showVolume, onAnalysisComplete, drawOverlays])
 
-  // Redraw overlays when layers change
+  // Redraw overlays when layers or signal filter changes
   useEffect(() => {
     if (analysis && klineDataRef.current.length) {
       drawOverlays(analysis, klineDataRef.current)
     }
-  }, [layers, analysis, drawOverlays])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layersKey, signalFilterKey, analysis])
 
   // Resize
   useEffect(() => {
@@ -419,6 +433,8 @@ export default function ChanChart({
     initChart()
     loadData()
     return () => {
+      try { markersPluginRef.current?.detach() } catch { /* ignore */ }
+      markersPluginRef.current = null
       chartRef.current?.remove(); chartRef.current = null; candleRef.current = null
       macdChartRef.current?.remove(); macdChartRef.current = null
       overlaySeriesRef.current = []
@@ -487,10 +503,18 @@ export default function ChanChart({
           {analysis.segment_count > 0 && <span className="tag tag-purple">{analysis.segment_count}seg</span>}
           {analysis.center_count > 0 && <span className="tag tag-yellow">{analysis.center_count}C</span>}
           {analysis.divergence_count > 0 && <span className="tag tag-red">{analysis.divergence_count}div</span>}
-          {analysis.signals.map((s, i) => {
-            const type = getSignalType(s)
-            return <span key={i} className={cn('tag font-semibold', isBuySignal(s) ? 'tag-green' : 'tag-red')}>{type}</span>
-          })}
+          {(() => {
+            const counts: Record<string, number> = {}
+            for (const s of analysis.signals) {
+              const t = getSignalType(s)
+              counts[t] = (counts[t] || 0) + 1
+            }
+            return Object.entries(counts).map(([type, count]) => (
+              <span key={type} className={cn('tag font-semibold', type.startsWith('B') ? 'tag-green' : 'tag-red')}>
+                {type}{count > 1 && <span className="text-[8px] ml-0.5">×{count}</span>}
+              </span>
+            ))
+          })()}
         </div>
       )}
 

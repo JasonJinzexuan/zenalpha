@@ -28,16 +28,22 @@ spec:
                   echo "=== Daily Bulk Ingest $(date -u) ==="
                   echo "Ingesting all timeframes (5m, 30m, 1h, 1d, 1w) for all instruments..."
 
-                  # Bulk ingest — fetches last 500 bars per timeframe per instrument
+                  # Bulk ingest — per-TF limits for sufficient Chan Theory structure
+                  # 5m/30m need 2000-3000 bars, 1d/1w need 500
                   # Rate limited internally at ~4 req/sec
-                  curl -sf -X POST "$AGENT/ingest/bulk" \
-                    -H 'Content-Type: application/json' \
-                    -d '{
-                      "instruments": ["AAPL","MSFT","GOOGL","AMZN","NVDA","META","TSLA","JPM","V","UNH","XOM","JNJ","WMT","PG","MA","HD","COST","ABBV","CRM"],
-                      "levels": ["5m","30m","1h","1d","1w"],
-                      "limit": 100
-                    }' \
-                    --max-time 1200 || echo "WARN: bulk ingest failed"
+                  for TF_CFG in "1w:500" "1d:500" "1h:2000" "30m:2000" "5m:3000"; do
+                    TF="${TF_CFG%%:*}"
+                    LIM="${TF_CFG##*:}"
+                    echo "--- Ingesting $TF (limit=$LIM) ---"
+                    curl -sf -X POST "$AGENT/ingest/bulk" \
+                      -H 'Content-Type: application/json' \
+                      -d "{
+                        \"instruments\": [\"AAPL\",\"MSFT\",\"GOOGL\",\"AMZN\",\"NVDA\",\"META\",\"TSLA\",\"JPM\",\"V\",\"UNH\",\"XOM\",\"JNJ\",\"WMT\",\"PG\",\"MA\",\"HD\",\"COST\",\"ABBV\",\"CRM\"],
+                        \"levels\": [\"$TF\"],
+                        \"limit\": $LIM
+                      }" \
+                      --max-time 600 || echo "WARN: $TF ingest failed"
+                  done
 
                   echo ""
                   echo "=== Signal Scan ==="

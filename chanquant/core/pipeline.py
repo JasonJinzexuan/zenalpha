@@ -133,10 +133,9 @@ class AnalysisPipeline:
             if div is not None:
                 self._divergences.append(div)
 
-        # L7: Signal generation — regenerate from scratch each time
-        # (replaces previous signals to avoid duplicate accumulation)
+        # L7: Signal generation — accumulate historical signals, deduplicate
         if self._trend is not None:
-            self._signals = self._signal_gen.generate(
+            new_signals = self._signal_gen.generate(
                 trend=self._trend,
                 divergence=self._divergences[-1] if self._divergences else None,
                 centers=effective_centers,
@@ -144,6 +143,14 @@ class AnalysisPipeline:
                 strokes=self._strokes,
                 instrument=self._instrument,
             )
+            # Deduplicate by (signal_type, timestamp) — a signal at the same
+            # point in time with the same type is the same signal.
+            seen = {(s.signal_type, s.timestamp) for s in self._signals}
+            for s in new_signals:
+                key = (s.signal_type, s.timestamp)
+                if key not in seen:
+                    self._signals.append(s)
+                    seen.add(key)
 
     def _snapshot(self) -> PipelineState:
         """Create an immutable snapshot of current state."""

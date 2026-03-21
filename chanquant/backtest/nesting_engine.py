@@ -23,14 +23,19 @@ from chanquant.core.objects import (
     TimeFrame,
 )
 from chanquant.core.pipeline import AnalysisPipeline
+from chanquant.strategy.models import StrategyParams, RiskParams
 
 from chanquant.backtest.metrics import calculate_metrics
 from chanquant.backtest.portfolio import PortfolioManager
 from chanquant.backtest.slippage import SlippageModel
 
 _ZERO = Decimal("0")
+_ONE = Decimal("1")
 _DEFAULT_STOP_LOSS_PCT = Decimal("0.05")
 _MAX_POSITION_PCT = Decimal("0.1")
+_ATR_PERIOD = 14
+
+_ALLOWED_SIGNALS_ALL = frozenset({"B1", "B2", "B3", "S1", "S2", "S3"})
 
 # Timeframes used for nesting analysis (large → small)
 _NESTING_LEVELS = [TimeFrame.WEEKLY, TimeFrame.DAILY, TimeFrame.MIN_30, TimeFrame.MIN_5]
@@ -54,21 +59,45 @@ class NestingBacktestEngine:
         require_alignment: bool = True,
         stop_loss_pct: Decimal = _DEFAULT_STOP_LOSS_PCT,
         max_position_pct: Decimal = _MAX_POSITION_PCT,
+        strategy_params: StrategyParams | None = None,
+        risk_params: RiskParams | None = None,
     ) -> None:
         self._portfolio = PortfolioManager()
         self._slippage = SlippageModel()
-        self._min_depth = min_nesting_depth
-        self._require_alignment = require_alignment
-        self._stop_loss_pct = stop_loss_pct
-        self._max_position_pct = max_position_pct
         self._nester = IntervalNester()
+        # ATR series per instrument, populated in run()
+        self._atr_data: dict[str, dict[datetime, Decimal]] = {}
+
+        # Strategy params → signal filtering (what to trade)
+        if strategy_params is not None:
+            self._min_depth = strategy_params.min_nesting_depth
+            self._require_alignment = strategy_params.require_alignment
+            self._allowed_signals = frozenset(strategy_params.allowed_signals)
+            self._min_strength = strategy_params.min_signal_strength
+        else:
+            self._min_depth = min_nesting_depth
+            self._require_alignment = require_alignment
+            self._allowed_signals = _ALLOWED_SIGNALS_ALL
+            self._min_strength = _ZERO
+
+        # Risk params → capital protection (how much to trade)
+        if risk_params is not None:
+            self._stop_loss_atr_mult = risk_params.stop_loss_atr_mult
+            self._stop_loss_pct = stop_loss_pct  # fallback if no ATR
+            self._max_position_pct = risk_params.max_position_pct
+            self._max_positions = risk_params.max_concurrent_positions
+        else:
+            self._stop_loss_atr_mult = Decimal("2")
+            self._stop_loss_pct = stop_loss_pct
+            self._max_position_pct = max_position_pct
+            self._max_positions = 10
 
     def run(
         self,
         multi_klines: dict[str, dict[TimeFrame, Sequence[RawKLine]]],
         initial_cash: Decimal = Decimal("1000000"),
         exec_level: TimeFrame = TimeFrame.DAILY,
-    ) -> tuple[BacktestMetrics, Sequence[PortfolioSnapshot], list[dict]]:
+    ) -> tuple[BacktestMetrics, Sequence[PortfolioSnapshot], list[dict], dict[str, dict]]:
         """Execute multi-timeframe backtest.
 
         Args:
@@ -94,6 +123,11 @@ class NestingBacktestEngine:
         timeline = _build_timeline(exec_klines)
         if not timeline:
             return BacktestMetrics(), (), []
+
+        # Phase 2.5: Compute ATR per instrument from exec-level klines
+        self._atr_data = {}
+        for inst, bars in exec_klines.items():
+            self._atr_data[inst] = _compute_atr_series(bars)
 
         # Phase 3: Walk timeline, execute trades
         # Strategy: try nesting first; fall back to exec_level signals
@@ -145,6 +179,12 @@ class NestingBacktestEngine:
                 if action_signal is None:
                     continue
 
+                # Strategy filter: signal type + strength
+                if action_signal.signal_type.value not in self._allowed_signals:
+                    continue
+                if action_signal.strength < self._min_strength:
+                    continue
+
                 # Dedup: don't process same signal twice
                 sig_key = f"{inst}:{action_signal.signal_type.value}:{action_signal.timestamp}"
                 if sig_key in processed_signals:
@@ -187,8 +227,26 @@ class NestingBacktestEngine:
             snapshot = self._portfolio.update_equity(snapshot, prices)
             snapshots.append(snapshot)
 
-        metrics = calculate_metrics(snapshots, snapshots[-1].trades)
-        return metrics, tuple(snapshots), trade_log
+        all_trades = snapshots[-1].trades
+        metrics = calculate_metrics(snapshots, all_trades)
+
+        # Per signal type breakdown
+        signal_stats: dict[str, dict] = {}
+        for entry in trade_log:
+            sig = entry.get("signal", "")
+            if sig not in signal_stats:
+                signal_stats[sig] = {"trades": 0, "wins": 0, "total_pnl": _ZERO}
+            signal_stats[sig]["trades"] += 1
+
+        # Match trade_log entries to closed trades for P&L
+        for trade in all_trades:
+            sig_type = trade.signal_type.value if trade.signal_type else ""
+            if sig_type in signal_stats:
+                if trade.pnl > _ZERO:
+                    signal_stats[sig_type]["wins"] += 1
+                signal_stats[sig_type]["total_pnl"] += trade.pnl
+
+        return metrics, tuple(snapshots), trade_log, signal_stats
 
     # ── Phase 1: Pipeline execution ──────────────────────────────────────────
 
@@ -258,6 +316,20 @@ class NestingBacktestEngine:
 
     # ── Trade execution ──────────────────────────────────────────────────────
 
+    def _get_stop_distance(self, instrument: str, timestamp: datetime, price: Decimal) -> Decimal:
+        """Get ATR-based stop distance. Falls back to fixed % if no ATR."""
+        atr_series = self._atr_data.get(instrument, {})
+        # Find nearest ATR at or before timestamp
+        atr = _ZERO
+        for ts in sorted(atr_series.keys(), reverse=True):
+            if ts <= timestamp:
+                atr = atr_series[ts]
+                break
+        if atr > _ZERO:
+            return atr * self._stop_loss_atr_mult
+        # Fallback: fixed 5%
+        return price * self._stop_loss_pct
+
     def _check_stops(
         self,
         snapshot: PortfolioSnapshot,
@@ -267,7 +339,10 @@ class NestingBacktestEngine:
             bar = bars.get(position.instrument)
             if bar is None:
                 continue
-            if _stop_triggered(position, bar, self._stop_loss_pct):
+            stop_dist = self._get_stop_distance(
+                position.instrument, bar.timestamp, position.entry_price,
+            )
+            if _stop_triggered_atr(position, bar, stop_dist):
                 stop_price = self._slippage.apply(
                     bar.close,
                     Direction.DOWN if position.direction == Direction.UP else Direction.UP,
@@ -283,6 +358,8 @@ class NestingBacktestEngine:
         self, snapshot: PortfolioSnapshot, signal: Signal, bar: RawKLine,
     ) -> PortfolioSnapshot:
         if any(p.instrument == signal.instrument for p in snapshot.positions):
+            return snapshot
+        if len(snapshot.positions) >= self._max_positions:
             return snapshot
         exec_price = self._slippage.apply(
             signal.price, Direction.UP, bar.volume, "mid_cap"
@@ -332,8 +409,15 @@ def _initial_snapshot(timestamp: datetime, cash: Decimal) -> PortfolioSnapshot:
 
 def _stop_triggered(position: Position, bar: RawKLine, stop_pct: Decimal) -> bool:
     if position.direction == Direction.UP:
-        return bar.low <= position.entry_price * (Decimal("1") - stop_pct)
-    return bar.high >= position.entry_price * (Decimal("1") + stop_pct)
+        return bar.low <= position.entry_price * (_ONE - stop_pct)
+    return bar.high >= position.entry_price * (_ONE + stop_pct)
+
+
+def _stop_triggered_atr(position: Position, bar: RawKLine, stop_distance: Decimal) -> bool:
+    """ATR-based stop: triggers when price moves stop_distance away from entry."""
+    if position.direction == Direction.UP:
+        return bar.low <= position.entry_price - stop_distance
+    return bar.high >= position.entry_price + stop_distance
 
 
 def _is_buy_signal(signal_type: SignalType) -> bool:
@@ -344,3 +428,38 @@ def _position_size(equity: Decimal, price: Decimal, max_pct: Decimal) -> Decimal
     if price <= _ZERO:
         return _ZERO
     return Decimal(int(equity * max_pct / price))
+
+
+def _compute_atr_series(
+    klines: Sequence[RawKLine], period: int = _ATR_PERIOD,
+) -> dict[datetime, Decimal]:
+    """Compute rolling ATR for a kline series. Returns {timestamp: atr}."""
+    if len(klines) < 2:
+        return {}
+    trs: list[tuple[datetime, Decimal]] = []
+    prev_close = klines[0].close
+    for bar in klines[1:]:
+        tr = max(
+            bar.high - bar.low,
+            abs(bar.high - prev_close),
+            abs(bar.low - prev_close),
+        )
+        trs.append((bar.timestamp, tr))
+        prev_close = bar.close
+
+    result: dict[datetime, Decimal] = {}
+    if len(trs) < period:
+        # Not enough data — use simple average of all TRs
+        avg = sum(t for _, t in trs) / Decimal(len(trs)) if trs else _ZERO
+        for ts, _ in trs:
+            result[ts] = avg
+        return result
+
+    # Initial SMA
+    atr = sum(t for _, t in trs[:period]) / Decimal(period)
+    result[trs[period - 1][0]] = atr
+    # EMA-style rolling
+    for i in range(period, len(trs)):
+        atr = (atr * Decimal(period - 1) + trs[i][1]) / Decimal(period)
+        result[trs[i][0]] = atr
+    return result

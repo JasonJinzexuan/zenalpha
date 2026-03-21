@@ -128,10 +128,24 @@ Signal / ScanResult
 | # | 层级 | 修正内容 | 原文依据 |
 |---|------|---------|---------|
 | 1 | L3 | 补充第二种情况（缺口 → 反向特征序列二次确认） | 第 067 课 |
-| 2 | L6 | 比较对象修正为 a 段 vs c 段（非 b vs c） | 第 024/037 课 |
-| 3 | L6 | c 段必须含对 B 中枢的第三类买卖点 | 第 037 课 |
-| 4 | L7 | 二买补充盘整背驰 + 小转大两个触发条件 | 第 053 课 |
-| 5 | L8 | 替换加权评分为区间套递进定位 | 第 030 课 |
+| 2 | L3 | 线段方向由实际价格走势决定，非特征序列终结方向 | — |
+| 3 | L4 | 移除中枢自动合并（`expand_centers`），保持独立中枢 | 第 017 课 |
+| 4 | L5 | 滑动窗口趋势判定（最近2-3个中枢），非全部中枢 | 第 018 课 |
+| 5 | L6 | 比较对象修正为 a 段 vs c 段（非 b vs c） | 第 024/037 课 |
+| 6 | L6 | 无经典 a+A+b+B+c 结构时，fallback 到最近两个同向段比较 | — |
+| 7 | L7 | 二买补充盘整背驰 + 小转大两个触发条件 | 第 053 课 |
+| 8 | L7 | B3/S3 累积所有有效信号，不仅最后一个 | — |
+| 9 | L7 | 信号按 (type, timestamp) 去重累积，非每轮覆盖 | — |
+| 10 | L8 | 替换加权评分为区间套递进定位 | 第 030 课 |
+
+#### 已知局限 & 待改进
+
+| # | 层级 | 问题 | 影响 |
+|---|------|------|------|
+| 1 | L2 | 反方向分型不满足笔规则时丢弃原始起始分型 | 震荡行情笔可能缺失 |
+| 2 | L6 | stagnation 与 area divergence 高度相关，三条件实质为两条件 | 背驰判断偏松 |
+| 3 | L7 | B3/S3 基于笔级别突破（非段级别），且仅检查最后一个中枢 | B3/S3 信号偏多 |
+| 4 | L7 | B2/S2 未限制在 B1 后第一次回调 | B2 可能远离实际二买位置 |
 
 ### LLM Agent 管道（LangGraph + Tool Use）
 
@@ -250,13 +264,16 @@ NesterAgent 有三层 fallback：
 | 页面 | 路由 | 数据管道 | 功能 |
 |------|------|---------|------|
 | **态势总览** | `/overview` | 确定性 | 多标的扫描状态矩阵，走势状态一览，实时数据流状态指示器 |
+| **信号分析** | `/signals` | 确定性 | 4级别 K 线图 (1w/1d/30m/5m) 并排显示 + 信号类型过滤 (B1-S3) + 信号时间线 |
 | **区间套地图** | `/nesting-map/:symbol` | 确定性 + LLM | 4层级递进分析 + **AI分析按钮**（调用 NesterAgent tool_use） |
-| **缠论图表** | `/chart/:symbol` | 确定性 | 交互式K线图 + 6层叠加 + MACD子图 |
+| **策略实验室** | `/strategy` | 确定性 | 策略参数/风控参数分离配置 + 标的选择器 + 回测结果 + 敏感度分析 |
+| **自选管理** | `/watchlist` | — | 自选列表管理 + 标的搜索添加 |
+| **通知中心** | `/notifications` | — | 信号通知记录 |
 | **LLM Pipeline** | `/pipeline` | LLM Agent | 一键触发 LangGraph 多Agent分析，Stage时间线，Tool Call展示 |
 | **持仓管理** | `/positions` | — | 多级别走势状态标签，操作提示 |
 | **信号回顾** | `/review` | — | 正确/错误/待定分组 |
 | **回测实验** | `/backtest` | 确定性 | Sharpe/Sortino/MaxDD + 权益曲线 |
-| **设置** | `/settings` | — | 自选列表管理，手动数据同步 |
+| **设置** | `/settings` | — | 手动数据同步 |
 
 ---
 
@@ -278,6 +295,11 @@ NesterAgent 有三层 fallback：
 | `POST` | `/ingest/sync` | **增量同步**（基于 last timestamp） |
 | `POST` | `/backtest` | 事件驱动回测 |
 | `POST` | `/backtest/nesting` | 多级别区间套回测 |
+| `POST` | `/strategy/backtest` | **策略回测**（strategy + risk 参数分离） |
+| `POST` | `/strategy/sensitivity` | 参数敏感度分析 |
+| `POST` | `/strategy/save` | 保存策略配置 |
+| `GET` | `/strategy/list` | 已保存策略列表 |
+| `POST` | `/decision/run` | 运行决策引擎 |
 
 ### 安全
 
@@ -315,9 +337,9 @@ Agent 执行循环（`tool_executor.py`）：
 zenalpha/
 ├── frontend/                          # React 18 SPA
 │   ├── src/
-│   │   ├── pages/                     # 态势总览, 区间套, Pipeline, 缠论图表, 回测...
-│   │   ├── components/chart/          # ChanChart (6层叠加 + MACD子图)
-│   │   ├── stores/                    # Zustand (auth, watchlist)
+│   │   ├── pages/                     # 态势总览, 信号分析, 区间套, 策略实验室, Pipeline...
+│   │   ├── components/chart/          # ChanChart (6层叠加 + MACD子图 + 信号标记)
+│   │   ├── stores/                    # Zustand (auth, watchlist, strategy)
 │   │   ├── api/                       # agent.ts, data.ts, auth.ts
 │   │   └── types/                     # chan.ts, api.ts
 │
@@ -338,12 +360,18 @@ zenalpha/
 │   ├── agents/
 │   │   ├── langgraph_pipeline.py      # LangGraph LLM Pipeline (L3-L8 Agent 链)
 │   │   ├── nester.py                  # NesterAgent (tool_use + 3层fallback)
+│   │   ├── decision.py                # 决策引擎 (信号 → 交易决策)
 │   │   ├── tool_defs.py               # 3个工具定义 + 执行器
 │   │   ├── tool_executor.py           # Agentic loop (invoke→tool→result→repeat)
 │   │   ├── bedrock.py                 # Bedrock model factory (Claude Sonnet)
 │   │   └── prompts.py                 # Agent prompt 加载
+│   ├── strategy/                      # 策略模块
+│   │   └── ...                        # 策略定义 + 参数优化
+│   ├── risk/                          # 风控模块
+│   │   └── ...                        # 仓位管理 + 止损
 │   ├── api/
-│   │   └── gateway.py                 # FastAPI (REST + 速率限制 + 输入校验)
+│   │   ├── gateway.py                 # FastAPI (REST + 速率限制 + 输入校验)
+│   │   └── strategy_routes.py         # 策略回测 + 敏感度分析 API
 │   ├── data/
 │   │   ├── timestream.py              # InfluxDB 客户端 (白名单防注入)
 │   │   ├── polygon.py                 # Polygon REST 客户端
@@ -454,8 +482,9 @@ aws cloudfront create-invalidation --distribution-id E2AYS09PAJLLZD --paths "/*"
 | **3** | React 前端 + InfluxDB 时序存储 + agent-service | ✅ Done |
 | **4** | LLM Agent 编排 (LangGraph + Bedrock + tool_use) | ✅ Done |
 | **4.5** | 实时数据流 (Massive WebSocket + 聚合 + 15min分析) | ✅ Done |
-| 5 | 加密货币扩展 (Binance WebSocket) | Planned |
-| 6 | 实时信号推送 (WebSocket + SNS) | Planned |
+| **5** | 信号分析页 + 策略实验室 + 缠论引擎修正 | ✅ Done |
+| 6 | 加密货币扩展 (Binance WebSocket) | Planned |
+| 7 | 实时信号推送 (WebSocket + SNS) | Planned |
 
 ---
 

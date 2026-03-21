@@ -151,16 +151,7 @@ class CenterDetector:
 
         # Segment breaks out — current center is complete
         completed = self._current
-
-        # Check expansion with previous completed center
-        if self._completed:
-            expanded = expand_centers(self._completed[-1], completed)
-            if expanded is not None:
-                self._completed[-1] = expanded
-                completed = expanded
-
-        if completed is not self._completed[-1] if self._completed else True:
-            self._completed.append(completed)
+        self._completed.append(completed)
 
         self._current = None
         self._buffer = [segment]

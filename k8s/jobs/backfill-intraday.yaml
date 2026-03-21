@@ -1,0 +1,30 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: backfill-intraday
+  namespace: zenalpha
+spec:
+  activeDeadlineSeconds: 3600
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: backfill
+          image: curlimages/curl:8.5.0
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              AGENT=http://agent-service.zenalpha.svc.cluster.local:8090
+              INSTRUMENTS='["AAPL","MSFT","GOOGL","AMZN","NVDA","META","TSLA","JPM","V","UNH","XOM","JNJ","WMT","PG","MA","HD","COST","ABBV","CRM"]'
+
+              for LEVEL in 30m 5m 1h; do
+                echo "=== Ingesting $LEVEL $(date -u) ==="
+                curl -sf -X POST "$AGENT/ingest/bulk" \
+                  -H 'Content-Type: application/json' \
+                  -d "{\"instruments\": $INSTRUMENTS, \"levels\": [\"$LEVEL\"], \"limit\": 500}" \
+                  --max-time 1200
+                echo ""
+              done
+
+              echo "=== All done $(date -u) ==="

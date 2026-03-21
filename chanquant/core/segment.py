@@ -124,8 +124,15 @@ def _make_segment(
     stroke_tuple = tuple(strokes)
     high = max(s.high for s in strokes)
     low = min(s.low for s in strokes)
+
+    # Determine actual direction from price movement, not from
+    # the characteristic sequence termination direction.
+    first_price = strokes[0].low if strokes[0].direction == Direction.UP else strokes[0].high
+    last_price = strokes[-1].high if strokes[-1].direction == Direction.UP else strokes[-1].low
+    actual_direction = Direction.UP if last_price > first_price else Direction.DOWN
+
     return Segment(
-        direction=direction,
+        direction=actual_direction,
         strokes=stroke_tuple,
         high=high,
         low=low,

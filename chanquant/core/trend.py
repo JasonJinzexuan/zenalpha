@@ -32,12 +32,27 @@ def _find_segment_between(
     center_a: Center,
     center_b: Center,
 ) -> Segment | None:
-    """Find the connecting segment between two centers (segment b)."""
+    """Find the connecting segment between two centers (segment b).
+
+    Centers often share boundary segments, so we relax the strict time
+    containment and look for a segment that overlaps the gap region.
+    """
     if not center_a.end_time or not center_b.start_time:
         return None
+
+    # Strict: segment fully between centers
     for seg in segments:
         if seg.start_time and seg.end_time:
             if seg.start_time >= center_a.end_time and seg.end_time <= center_b.start_time:
+                return seg
+
+    # Relaxed: segment that spans the boundary (starts near a's end, ends near b's start)
+    for seg in segments:
+        if seg.start_time and seg.end_time:
+            overlaps_a_end = seg.end_time >= center_a.end_time
+            overlaps_b_start = seg.start_time <= center_b.start_time
+            mostly_between = seg.start_time >= center_a.start_time and seg.end_time <= center_b.end_time
+            if overlaps_a_end and overlaps_b_start and mostly_between:
                 return seg
     return None
 
@@ -81,7 +96,11 @@ class TrendClassifier:
         segments: Sequence[Segment],
         level: TimeFrame = TimeFrame.DAILY,
     ) -> TrendType:
-        """Classify the trend type based on center relationships."""
+        """Classify the trend type based on center relationships.
+
+        Uses a sliding window over the most recent centers to detect local
+        trends, rather than requiring ALL centers to be non-overlapping.
+        """
         if not centers:
             return TrendType(
                 classification=TrendClass.CONSOLIDATION,
@@ -92,17 +111,33 @@ class TrendClassifier:
         if len(centers) == 1:
             return self._classify_consolidation(centers[0], segments, level)
 
-        # Check for up trend (2+ non-overlapping ascending centers)
-        if self._is_up_trend(centers):
+        # Check recent centers (last 2-3) for local trend
+        recent = centers[-3:] if len(centers) >= 3 else centers[-2:]
+
+        # Check for up trend in recent window
+        if self._is_up_trend(recent):
             return self._build_trend(
                 TrendClass.UP_TREND, centers, segments, level, Direction.UP
             )
 
-        # Check for down trend (2+ non-overlapping descending centers)
-        if self._is_down_trend(centers):
+        # Check for down trend in recent window
+        if self._is_down_trend(recent):
             return self._build_trend(
                 TrendClass.DOWN_TREND, centers, segments, level, Direction.DOWN
             )
+
+        # Pairwise check: even if 3 centers don't all agree,
+        # the last 2 may indicate a local trend
+        if len(recent) > 2:
+            last_two = recent[-2:]
+            if self._is_up_trend(last_two):
+                return self._build_trend(
+                    TrendClass.UP_TREND, centers, segments, level, Direction.UP
+                )
+            if self._is_down_trend(last_two):
+                return self._build_trend(
+                    TrendClass.DOWN_TREND, centers, segments, level, Direction.DOWN
+                )
 
         # Default: consolidation with the latest center
         return self._classify_consolidation(centers[-1], segments, level)

@@ -7,10 +7,13 @@ as REST endpoints.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from chanquant.core.objects import RawKLine, TimeFrame
 
@@ -30,6 +33,10 @@ app = FastAPI(
     description="Signal identification and instrument filtering based on Chan Theory (缠论).",
 )
 
+# Register strategy lab routes
+from chanquant.api.strategy_routes import router as strategy_router  # noqa: E402
+app.include_router(strategy_router)
+
 
 # ── Simple in-memory rate limiter (no extra dependency) ──────────────────────
 
@@ -43,6 +50,7 @@ _RATE_LIMITS: dict[str, int] = {
     "/pipeline": 20,     # 20 req/min for LLM pipelines
     "/nesting": 10,      # 10 req/min for nesting analysis
     "/scan": 10,         # 10 req/min for scans
+    "/decisions": 10,    # 10 req/min for decisions
 }
 _request_counts: dict[str, list[float]] = defaultdict(list)
 
@@ -650,6 +658,7 @@ class NestingAnalysisRequest(BaseModel):
 class NestingAnalysisResponse(BaseModel):
     instrument: str
     nesting_path: list[str] = []
+    per_level: dict[str, dict] = {}
     target_level: str = ""
     large_signal: str | None = None
     medium_signal: str | None = None
@@ -657,6 +666,8 @@ class NestingAnalysisResponse(BaseModel):
     nesting_depth: int = 0
     direction_aligned: bool = False
     confidence: str = "0"
+    actionable: bool = False
+    status: str = ""
     confidence_source: str = ""
     reasoning: str = ""
     risk_assessment: str = ""
@@ -683,6 +694,7 @@ async def nesting_analyze(req: NestingAnalysisRequest) -> NestingAnalysisRespons
     return NestingAnalysisResponse(
         instrument=result.get("instrument", req.instrument),
         nesting_path=result.get("nesting_path", []),
+        per_level=result.get("per_level", {}),
         target_level=result.get("target_level", ""),
         large_signal=result.get("large_signal"),
         medium_signal=result.get("medium_signal"),
@@ -690,6 +702,8 @@ async def nesting_analyze(req: NestingAnalysisRequest) -> NestingAnalysisRespons
         nesting_depth=result.get("nesting_depth", 0),
         direction_aligned=result.get("direction_aligned", False),
         confidence=str(result.get("confidence", "0")),
+        actionable=result.get("actionable", False),
+        status=result.get("status", ""),
         confidence_source=result.get("confidence_source", ""),
         reasoning=result.get("reasoning", ""),
         risk_assessment=result.get("risk_assessment", ""),
@@ -1132,3 +1146,106 @@ async def pipeline_status(instruments: str = "", level: str = "1d") -> PipelineS
             items.append(PipelineItemStatus(instrument=sym, status="idle", level=level))
 
     return PipelineStatusResponse(items=items)
+
+
+# ── Trading Decisions ────────────────────────────────────────────────────────
+
+
+class DecisionOutput(BaseModel):
+    instrument: str
+    timestamp: str
+    action: str  # "BUY" | "SELL"
+    price_current: str | None = ""
+    price_range_low: str | None = ""
+    price_range_high: str | None = ""
+    stop_loss: str | None = ""
+    position_size: str | None = ""
+    urgency: str | None = ""
+    confidence: float = 0.0
+    signal_basis: str | None = ""
+    macro_context: str | None = ""
+    reasoning: str | None = ""
+    nesting_summary: dict = {}
+
+
+class DecisionTriggerRequest(BaseModel):
+    instruments: list[str]
+    use_llm: bool = True
+    strategy: str | None = None
+
+
+class DecisionTriggerResponse(BaseModel):
+    triggered: int
+    decisions: list[DecisionOutput]
+
+
+class DecisionHistoryResponse(BaseModel):
+    decisions: list[DecisionOutput]
+
+
+class DecisionLatestResponse(BaseModel):
+    decisions: list[DecisionOutput]
+
+
+@app.post("/decisions/trigger", response_model=DecisionTriggerResponse)
+async def trigger_decisions(req: DecisionTriggerRequest) -> DecisionTriggerResponse:
+    """Trigger trading decision analysis for given instruments.
+
+    Fetches macro news, runs nesting analysis, and produces actionable decisions.
+    Only returns decisions that require action (BUY/SELL).
+    """
+    for inst in req.instruments:
+        _validate_instrument(inst)
+
+    from chanquant.agents.decision import DecisionAgent
+    from chanquant.data.decision_store import save_decision
+    from chanquant.data.polygon import PolygonClient
+
+    # Fetch macro news
+    macro_news: list[dict] = []
+    if _POLYGON_KEY:
+        try:
+            polygon = PolygonClient(api_key=_POLYGON_KEY)
+            macro_news = await polygon.get_news(limit=10)
+            await polygon.close()
+        except Exception as exc:
+            logger.warning(f"Failed to fetch news: {exc}")
+
+    agent = DecisionAgent(use_llm=req.use_llm, strategy_name=req.strategy)
+    decisions = await asyncio.to_thread(
+        agent.analyze_batch, req.instruments, macro_news,
+    )
+
+    # Persist decisions
+    outputs: list[DecisionOutput] = []
+    for d in decisions:
+        data = d.model_dump()
+        save_decision(data)
+        outputs.append(DecisionOutput(**data))
+
+    return DecisionTriggerResponse(triggered=len(outputs), decisions=outputs)
+
+
+@app.get("/decisions/{instrument}", response_model=DecisionHistoryResponse)
+async def decision_history(instrument: str, limit: int = 20) -> DecisionHistoryResponse:
+    """Get decision history for a specific instrument."""
+    _validate_instrument(instrument)
+
+    from chanquant.data.decision_store import get_decisions
+
+    raw = await asyncio.to_thread(get_decisions, instrument, limit)
+    return DecisionHistoryResponse(
+        decisions=[DecisionOutput(**d) for d in raw],
+    )
+
+
+@app.get("/decisions/latest/all", response_model=DecisionLatestResponse)
+async def decisions_latest(instruments: str = "") -> DecisionLatestResponse:
+    """Get the most recent decision for each instrument."""
+    from chanquant.data.decision_store import get_latest_decisions
+
+    inst_list = [s.strip() for s in instruments.split(",") if s.strip()] if instruments else None
+    raw = await asyncio.to_thread(get_latest_decisions, inst_list)
+    return DecisionLatestResponse(
+        decisions=[DecisionOutput(**d) for d in raw],
+    )

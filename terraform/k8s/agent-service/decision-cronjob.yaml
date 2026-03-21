@@ -1,0 +1,39 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: decision-analysis
+  namespace: zenalpha
+spec:
+  # Every hour during US market hours (13:30-20:00 UTC = 9:30-16:00 ET)
+  schedule: "30 13-20 * * 1-5"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 600
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: decision
+              image: curlimages/curl:8.5.0
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  AGENT=http://agent-service.zenalpha.svc.cluster.local:8090
+
+                  echo "=== Decision Analysis $(date -u) ==="
+
+                  curl -sf -X POST "$AGENT/decisions/trigger" \
+                    -H 'Content-Type: application/json' \
+                    -d '{
+                      "instruments": ["AAPL","MSFT","GOOGL","AMZN","NVDA","META","TSLA","JPM","V","UNH","XOM","JNJ","WMT","PG","MA","HD","COST","ABBV","CRM"],
+                      "use_llm": true
+                    }' \
+                    --max-time 300 || echo "WARN: decision analysis failed"
+
+                  echo ""
+                  echo "=== Done ==="

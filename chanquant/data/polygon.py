@@ -84,6 +84,32 @@ class PolygonClient:
             _to_raw_kline(bar, timeframe) for bar in all_results[:limit]
         )
 
+    async def get_news(
+        self,
+        instrument: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Fetch recent news articles. Optionally filter by instrument."""
+        params: dict[str, Any] = {
+            "limit": limit,
+            "sort": "published_utc",
+            "order": "desc",
+        }
+        if instrument:
+            params["ticker"] = instrument
+        data = await self._request("/v2/reference/news", params=params)
+        results = data.get("results", [])
+        return [
+            {
+                "title": r.get("title", ""),
+                "published": r.get("published_utc", ""),
+                "tickers": r.get("tickers", []),
+                "description": (r.get("description") or "")[:300],
+                "source": r.get("publisher", {}).get("name", ""),
+            }
+            for r in results
+        ]
+
     async def get_instruments(self) -> Sequence[str]:
         data = await self._request(
             "/v3/reference/tickers",

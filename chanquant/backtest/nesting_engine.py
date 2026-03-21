@@ -272,23 +272,33 @@ class NestingBacktestEngine:
         all_trades = snapshots[-1].trades
         metrics = calculate_metrics(snapshots, all_trades)
 
-        # Per signal type breakdown
-        signal_stats: dict[str, dict] = {}
-        for entry in trade_log:
-            sig = entry.get("signal", "")
-            if sig not in signal_stats:
-                signal_stats[sig] = {"trades": 0, "wins": 0, "total_pnl": _ZERO}
-            signal_stats[sig]["trades"] += 1
-
-        # Match trade_log entries to closed trades for P&L
+        # Decision-dimension stats (mirrors DecisionAgent logic)
+        # Group by: nesting depth + alignment status
+        decision_stats: dict[str, dict] = {}
+        # Index closed trades by instrument+timestamp for P&L matching
+        closed_by_inst: dict[str, list] = {}
         for trade in all_trades:
-            sig_type = trade.signal_type.value if trade.signal_type else ""
-            if sig_type in signal_stats:
-                if trade.pnl > _ZERO:
-                    signal_stats[sig_type]["wins"] += 1
-                signal_stats[sig_type]["total_pnl"] += trade.pnl
+            closed_by_inst.setdefault(trade.instrument, []).append(trade)
 
-        return metrics, tuple(snapshots), trade_log, signal_stats
+        for entry in trade_log:
+            if entry["action"] != "BUY":
+                continue  # only count entry decisions
+            depth = entry.get("nesting_depth", 0)
+            aligned = entry.get("aligned", False)
+            category = f"{depth}层嵌套{'✓对齐' if aligned else '✗不齐'}"
+            if category not in decision_stats:
+                decision_stats[category] = {"trades": 0, "wins": 0, "total_pnl": _ZERO}
+            decision_stats[category]["trades"] += 1
+
+            # Find matching closed trade for this instrument
+            inst = entry["instrument"]
+            if inst in closed_by_inst and closed_by_inst[inst]:
+                closed = closed_by_inst[inst].pop(0)
+                if closed.pnl > _ZERO:
+                    decision_stats[category]["wins"] += 1
+                decision_stats[category]["total_pnl"] += closed.pnl
+
+        return metrics, tuple(snapshots), trade_log, decision_stats
 
     # ── Phase 1: Pipeline execution ──────────────────────────────────────────
 

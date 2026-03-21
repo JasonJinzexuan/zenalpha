@@ -512,15 +512,15 @@ function QualificationGates({ gates }: { gates: Record<string, QualificationGate
 function SignalStatsTable({ stats }: { stats: StrategyBacktestResponse['signal_stats'] }) {
   return (
     <div className="space-y-1">
-      <div className="text-[11px] text-text-muted">信号类型统计</div>
+      <div className="text-[11px] text-text-muted">决策维度统计</div>
       <table className="w-full text-[10px]">
-        <thead><tr className="text-text-dim border-b border-bg-border"><th className="text-left py-1 px-2">信号</th><th className="text-right py-1 px-2">交易数</th><th className="text-right py-1 px-2">胜率</th><th className="text-right py-1 px-2">总盈亏</th></tr></thead>
+        <thead><tr className="text-text-dim border-b border-bg-border"><th className="text-left py-1 px-2">决策类型</th><th className="text-right py-1 px-2">交易数</th><th className="text-right py-1 px-2">胜率</th><th className="text-right py-1 px-2">总盈亏</th></tr></thead>
         <tbody>
           {stats.map(s => {
             const wr = parseFloat(s.win_rate) * 100; const pnl = parseFloat(s.total_pnl)
             return (
               <tr key={s.signal_type} className="border-b border-bg-border/50">
-                <td className="py-1 px-2"><span className={cn('tag', s.signal_type.startsWith('B') ? 'tag-red' : 'tag-green')}>{s.signal_type}</span></td>
+                <td className="py-1 px-2 text-text-primary">{s.signal_type}</td>
                 <td className="text-right py-1 px-2 text-text-primary">{s.trades}</td>
                 <td className="text-right py-1 px-2 text-text-primary">{wr.toFixed(1)}%</td>
                 <td className={cn('text-right py-1 px-2', pnl >= 0 ? 'text-accent-green' : 'text-accent-red')}>{pnl.toFixed(2)}</td>

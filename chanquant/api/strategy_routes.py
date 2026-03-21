@@ -208,8 +208,12 @@ async def _fetch_backtest_klines(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> dict[str, dict[TimeFrame, Sequence[RawKLine]]]:
-    """Fetch multi-TF klines from InfluxDB for backtesting."""
+    """Fetch multi-TF klines from InfluxDB for backtesting.
+
+    Defaults to last 6 months of data if no date range specified.
+    """
     import os
+    from datetime import datetime, timedelta, timezone
     from chanquant.data.timestream import TimestreamClient
 
     url = os.environ.get("INFLUXDB_URL", "")
@@ -217,16 +221,33 @@ async def _fetch_backtest_klines(
     if not url or not token:
         return {}
 
+    # Default to 6 months
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=180)
+    if start_date:
+        try:
+            cutoff = datetime.fromisoformat(start_date).replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+
+    # Per-TF limits tuned for ~6 months of data
+    tf_limits_6mo = {"1w": 26, "1d": 130, "30m": 2000, "5m": 3000}
+
     ts = TimestreamClient(url=url, token=token)
     try:
         result: dict[str, dict[TimeFrame, Sequence[RawKLine]]] = {}
         for inst in instruments:
             inst_data: dict[TimeFrame, Sequence[RawKLine]] = {}
             for tf_str, tf_enum in _TF_MAP.items():
-                limit = _TF_LIMITS.get(tf_str, 500)
+                limit = tf_limits_6mo.get(tf_str, 500)
                 klines = await ts.get_klines(inst, tf_enum, limit)
                 if klines:
-                    inst_data[tf_enum] = list(klines)
+                    filtered = [
+                        k for k in klines
+                        if k.timestamp.replace(tzinfo=timezone.utc) >= cutoff
+                    ]
+                    if filtered:
+                        inst_data[tf_enum] = filtered
             if inst_data:
                 result[inst] = inst_data
         return result

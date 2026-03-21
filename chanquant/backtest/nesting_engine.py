@@ -23,6 +23,7 @@ from chanquant.core.objects import (
     TimeFrame,
 )
 from chanquant.core.pipeline import AnalysisPipeline
+from chanquant.risk.manager import RiskManager
 from chanquant.strategy.models import StrategyParams, RiskParams
 
 from chanquant.backtest.metrics import calculate_metrics
@@ -65,28 +66,35 @@ class NestingBacktestEngine:
         self._portfolio = PortfolioManager()
         self._slippage = SlippageModel()
         self._nester = IntervalNester()
+        self._risk_manager = RiskManager()
         # ATR series per instrument, populated in run()
         self._atr_data: dict[str, dict[datetime, Decimal]] = {}
 
         # Strategy params → signal filtering (what to trade)
         if strategy_params is not None:
+            self._strategy_params = strategy_params
             self._min_depth = strategy_params.min_nesting_depth
             self._require_alignment = strategy_params.require_alignment
             self._allowed_signals = frozenset(strategy_params.allowed_signals)
             self._min_strength = strategy_params.min_signal_strength
+            self._min_confidence = strategy_params.min_confidence
         else:
+            self._strategy_params = StrategyParams()
             self._min_depth = min_nesting_depth
             self._require_alignment = require_alignment
             self._allowed_signals = _ALLOWED_SIGNALS_ALL
             self._min_strength = _ZERO
+            self._min_confidence = Decimal("0.4")
 
         # Risk params → capital protection (how much to trade)
         if risk_params is not None:
+            self._risk_params = risk_params
             self._stop_loss_atr_mult = risk_params.stop_loss_atr_mult
             self._stop_loss_pct = stop_loss_pct  # fallback if no ATR
             self._max_position_pct = risk_params.max_position_pct
             self._max_positions = risk_params.max_concurrent_positions
         else:
+            self._risk_params = RiskParams()
             self._stop_loss_atr_mult = Decimal("2")
             self._stop_loss_pct = stop_loss_pct
             self._max_position_pct = max_position_pct
@@ -110,7 +118,7 @@ class NestingBacktestEngine:
         """
         instruments = list(multi_klines.keys())
         if not instruments:
-            return BacktestMetrics(), (), []
+            return BacktestMetrics(), (), [], {}
 
         # Phase 1: Run all pipelines, collect signals with timestamps
         all_signals = self._run_all_pipelines(multi_klines)
@@ -122,15 +130,14 @@ class NestingBacktestEngine:
                 exec_klines[inst] = multi_klines[inst][exec_level]
         timeline = _build_timeline(exec_klines)
         if not timeline:
-            return BacktestMetrics(), (), []
+            return BacktestMetrics(), (), [], {}
 
         # Phase 2.5: Compute ATR per instrument from exec-level klines
         self._atr_data = {}
         for inst, bars in exec_klines.items():
             self._atr_data[inst] = _compute_atr_series(bars)
 
-        # Phase 3: Walk timeline, execute trades
-        # Strategy: try nesting first; fall back to exec_level signals
+        # Phase 3: Walk timeline, execute trades via nesting + risk gate
         snapshot = _initial_snapshot(timeline[0][0], initial_cash)
         snapshots: list[PortfolioSnapshot] = [snapshot]
         trade_log: list[dict] = []
@@ -143,39 +150,38 @@ class NestingBacktestEngine:
             snapshot = self._check_stops(snapshot, bars)
 
             for inst in bars:
-                action_signal = None
-                nesting_depth = 0
-                aligned = False
-                large_sig = None
-                medium_sig = None
-                precise_sig = None
-
-                # Try nesting first
+                # Must pass multi-TF nesting — no fallback to single-TF
                 nested = self._find_nested_signals(
                     all_signals.get(inst, {}), timestamp
                 )
-                if nested is not None and nested.nesting_depth >= self._min_depth:
-                    if not self._require_alignment or nested.direction_aligned:
-                        action_signal = (
-                            nested.precise_signal
-                            or nested.medium_signal
-                            or nested.large_signal
-                        )
-                        nesting_depth = nested.nesting_depth
-                        aligned = nested.direction_aligned
-                        large_sig = nested.large_signal
-                        medium_sig = nested.medium_signal
-                        precise_sig = nested.precise_signal
+                if nested is None or nested.nesting_depth < self._min_depth:
+                    continue
 
-                # Fallback: use exec_level signals directly
-                if action_signal is None:
-                    action_signal = self._find_exec_level_signal(
-                        all_signals.get(inst, {}), exec_level, timestamp
-                    )
-                    if action_signal is not None:
-                        nesting_depth = 1
-                        aligned = True
+                nesting_depth = nested.nesting_depth
+                aligned = nested.direction_aligned
+                large_sig = nested.large_signal
+                medium_sig = nested.medium_signal
+                precise_sig = nested.precise_signal
 
+                # Direction alignment check
+                if self._require_alignment and not aligned:
+                    continue
+
+                # Confidence gate (mirrors DecisionAgent deterministic logic)
+                confidence = min(
+                    Decimal("1"),
+                    Decimal(nesting_depth) * Decimal("0.3")
+                    + (Decimal("0.2") if aligned else _ZERO),
+                )
+                if confidence < self._min_confidence:
+                    continue
+
+                # Pick the most precise signal for execution
+                action_signal = (
+                    nested.precise_signal
+                    or nested.medium_signal
+                    or nested.large_signal
+                )
                 if action_signal is None:
                     continue
 
@@ -184,6 +190,42 @@ class NestingBacktestEngine:
                     continue
                 if action_signal.strength < self._min_strength:
                     continue
+
+                is_sell = action_signal.signal_type in (
+                    SignalType.S1, SignalType.S2, SignalType.S3,
+                )
+
+                # RiskManager gate (skip for sell/exit signals)
+                if not is_sell:
+                    # Build nesting_result dict for risk manager
+                    nesting_result = {
+                        "nesting_depth": nesting_depth,
+                        "direction_aligned": aligned,
+                        "confidence": str(confidence),
+                        "per_level": {},
+                    }
+                    current_drawdown = (
+                        (snapshot.peak_equity - snapshot.equity) / snapshot.peak_equity
+                        if snapshot.peak_equity > _ZERO else _ZERO
+                    )
+                    atr_val = _ZERO
+                    atr_series = self._atr_data.get(inst, {})
+                    for ts in sorted(atr_series.keys(), reverse=True):
+                        if ts <= timestamp:
+                            atr_val = atr_series[ts]
+                            break
+
+                    risk_result = self._risk_manager.evaluate(
+                        nesting_result=nesting_result,
+                        params=self._risk_params,
+                        equity=snapshot.equity,
+                        current_positions=len(snapshot.positions),
+                        current_drawdown=current_drawdown,
+                        atr_value=atr_val,
+                        current_price=bars[inst].close,
+                    )
+                    if not risk_result.approved:
+                        continue
 
                 # Dedup: don't process same signal twice
                 sig_key = f"{inst}:{action_signal.signal_type.value}:{action_signal.timestamp}"
@@ -292,27 +334,6 @@ class NestingBacktestEngine:
             return None
 
         return self._nester.nest(active)
-
-    def _find_exec_level_signal(
-        self,
-        signals_by_tf: dict[TimeFrame, list[Signal]],
-        exec_level: TimeFrame,
-        current_time: datetime,
-    ) -> Signal | None:
-        """Find the most recent exec-level signal active at current_time."""
-        sigs = signals_by_tf.get(exec_level, [])
-        if not sigs:
-            return None
-        lookback = _SIGNAL_LOOKBACK.get(exec_level, timedelta(days=10))
-        window_start = current_time - lookback
-        active = [
-            s for s in sigs
-            if window_start <= s.timestamp <= current_time
-        ]
-        if not active:
-            return None
-        # Return the most recent signal
-        return max(active, key=lambda s: s.timestamp)
 
     # ── Trade execution ──────────────────────────────────────────────────────
 

@@ -208,7 +208,7 @@ class NestingBacktestRequest(BaseModel):
     initial_cash: str = "1000000"
     levels: list[str] = ["1w", "1d", "30m", "5m"]
     exec_level: str = "1d"
-    limit: int = 500
+    limit: int = 130  # ~6 months of daily data
     min_nesting_depth: int = 2
     require_alignment: bool = True
 
@@ -631,7 +631,7 @@ async def backtest_nesting(req: NestingBacktestRequest) -> BacktestResponse:
         require_alignment=req.require_alignment,
     )
     exec_tf = TimeFrame(req.exec_level)
-    metrics, _, trade_log = engine.run(
+    metrics, _, trade_log, _ = engine.run(
         multi_klines,
         initial_cash=Decimal(req.initial_cash),
         exec_level=exec_tf,
